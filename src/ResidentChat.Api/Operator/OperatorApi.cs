@@ -84,9 +84,9 @@ public static class OperatorApi
             var (body, bad) = await ReadJsonAsync(ctx);
             if (bad is not null) return bad;
 
-            using (body!)
+            using (var payload = body!)
             {
-                var root = body.RootElement;
+                var root = payload.RootElement;
                 if (root.ValueKind != JsonValueKind.Object
                     || root.EnumerateObject().Count() != 2
                     || !root.TryGetProperty("category", out var categoryToken)
@@ -136,9 +136,9 @@ public static class OperatorApi
         var (body, bad) = await ReadJsonAsync(ctx);
         if (bad is not null) return bad;
 
-        using (body!)
+        using (var payload = body!)
         {
-            var root = body.RootElement;
+            var root = payload.RootElement;
             if (root.ValueKind != JsonValueKind.Object
                 || root.EnumerateObject().Count() != 1
                 || !root.TryGetProperty("expectedVersion", out var versionToken)
@@ -185,7 +185,7 @@ public static class OperatorApi
 
             try
             {
-                return (JsonDocument.Parse(buffer.AsMemory(0, n),
+                return (JsonDocument.Parse(buffer.AsMemory(0, n).ToArray(),
                     new JsonDocumentOptions { MaxDepth = 8 }), null);
             }
             catch (JsonException)
