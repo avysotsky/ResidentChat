@@ -2,7 +2,7 @@
 
 Updated: 2026-10-13  
 Repository: **PRIVATE** `avysotsky/ResidentChat`  
-Status: security-first foundation; no production integration authorized.
+Status: **RC-01 Draft PR #1 and stacked RC-02 Draft PR #2 implemented with synthetic CI gates; neither merged or authorized for production.**
 
 ## Mission and scope
 
@@ -56,10 +56,12 @@ No generic cloud model client, auto-network retrieval or outbound analytics. Kno
 - Unit/synthetic tests covering invalid secrets, excessive payload, malformed update, allowlist, duplicates, disabled configuration; HTTP gate where feasible.
 - Must document that in-memory deduplication is not durable and is inadequate for future non-idempotent side effects.
 
-### RC-02 — Authorized operator workflow
+### RC-02 — Authorized operator workflow (implemented in stacked Draft PR #2; synthetic-only)
 - Explicit admin authentication/authorization, cross-building isolation, maintenance categories, human review.
 - Define minimal persistence and retention model before storing actual tickets.
 - Every important change logged only through privacy-approved structured audit events.
+- **Implemented in PR #2:** offline JWT operator/supervisor roles, tenant allowlist, metadata-only tickets, pseudonymous actor audit, optimistic transitions, PostgreSQL RLS and two-tenant synthetic integration checks.
+- **Not implemented / still blocking production:** live customer authorization, identity provider/rotation/revocation, retention enforcement, real-world contacts, ticket-to-Telegram integration, firewall egress evidence, rate limits, durable RC-01 dedup.
 
 ### RC-03 — Local AI
 - Isolated local model adapter with no remote fallback.
@@ -91,4 +93,4 @@ Customer must confirm group platform, own the chat, authorize the bot, approve p
 
 ## Next-agent instructions
 
-Read this file and `docs/THREAT_MODEL.md` first; inspect current `main` and Draft PRs before writing. Do not weaken privacy invariants to simplify tests. Never send resident content to external models, even for debugging. Build/test synthetic-only. Do not claim code is compiled unless real build logs exist.
+Read this file, `docs/THREAT_MODEL.md`, `docs/RC-01.md` and `docs/RC-02.md` first; inspect current `main` and Draft PRs before writing. RC-02 is stacked on the RC-01 branch, so merge order matters. Both PRs must be reviewed before merging. Do not weaken privacy invariants to simplify tests. Never send resident content to external models, even for debugging. Build/test synthetic-only. Do not claim code is compiled unless real build logs exist.

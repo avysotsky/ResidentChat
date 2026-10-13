@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/ResidentChat.Api/ResidentChat.Api.csproj" />
+    <Content Include="../../db/migrations/001_ticket_workflow.sql" Link="migrations/001_ticket_workflow.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

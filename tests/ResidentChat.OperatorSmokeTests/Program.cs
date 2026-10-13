@@ -1,0 +1,244 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
+using ResidentChat.Api;
+using ResidentChat.Core.Tickets;
+
+const string Issuer = "residentchat.synthetic.test";
+const string Audience = "residentchat.synthetic.operator";
+const string SigningKey = "SYNTHETIC_SIGNING_KEY_ONLY_1234567890_ABCDEFGHIJ";
+const string AuditKey = "SYNTHETIC_AUDIT_KEY_ONLY_1234567890_QWERTYZXCV";
+const string Tenant1 = "11111111-1111-4111-8111-111111111111";
+const string Tenant2 = "22222222-2222-4222-8222-222222222222";
+const string Outsider = "33333333-3333-4333-8333-333333333333";
+
+try
+{
+    var adminConn = Environment.GetEnvironmentVariable("RC02_TEST_PG_ADMIN");
+    var appConn = Environment.GetEnvironmentVariable("RC02_TEST_PG_RUNTIME");
+    Check(!string.IsNullOrWhiteSpace(adminConn) && !string.IsNullOrWhiteSpace(appConn),
+        "synthetic Postgres connection environment required");
+    await SetupDatabaseAsync(adminConn!);
+
+    await using (var disabled = await StartAsync(appConn!, false, true))
+    {
+        var response = await Post(disabled.Client, "/operator/v1/tickets",
+            """{"category":"Heating","priority":"Routine"}""", null);
+        Check(response.StatusCode == HttpStatusCode.NotFound, "API disabled by default");
+    }
+
+    await using (var unconfigured = await StartAsync(appConn!, true, false))
+    {
+        var response = await Post(unconfigured.Client, "/operator/v1/tickets",
+            """{"category":"Heating","priority":"Routine"}""", null);
+        Check(response.StatusCode == HttpStatusCode.NotFound, "incomplete config denied");
+    }
+
+    await using var server = await StartAsync(appConn!, true, true);
+    var client = server.Client;
+    var operator1 = Jwt(Tenant1, "operator", "synthetic-user-1");
+    var supervisor1 = Jwt(Tenant1, "supervisor", "synthetic-supervisor-1");
+    var operator2 = Jwt(Tenant2, "operator", "synthetic-user-2");
+    var outsider = Jwt(Outsider, "operator", "synthetic-outsider");
+
+    Check((await Post(client, "/operator/v1/tickets",
+        """{"category":"Water","priority":"Urgent"}""", null)).StatusCode
+        == HttpStatusCode.Unauthorized, "missing JWT rejected");
+    Check((await Post(client, "/operator/v1/tickets",
+        """{"category":"Water","priority":"Urgent"}""", operator1 + "tampered")).StatusCode
+        == HttpStatusCode.Unauthorized, "modified JWT rejected");
+    Check((await Post(client, "/operator/v1/tickets",
+        """{"category":"Water","priority":"Urgent"}""", outsider)).StatusCode
+        == HttpStatusCode.Forbidden, "unconfigured tenant claim rejected");
+
+    Check((await Post(client, "/operator/v1/tickets",
+        """{"category":"Water","priority":"Urgent","message":"synthetic forbidden raw chat"}""", operator1)).StatusCode
+        == HttpStatusCode.BadRequest, "text and unexpected fields rejected");
+    Check((await Post(client, "/operator/v1/tickets",
+        """{"category":"SomethingElse","priority":"Routine"}""", operator1)).StatusCode
+        == HttpStatusCode.BadRequest, "unknown category rejected");
+
+    var created = await Post(client, "/operator/v1/tickets",
+        """{"category":"Water","priority":"Urgent"}""", operator1);
+    Check(created.StatusCode == HttpStatusCode.Created, "synthetic urgent ticket created");
+    using var createdJson = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+    var createdRoot = createdJson.RootElement;
+    Guid ticketId = createdRoot.GetProperty("ticketId").GetGuid();
+    Check(createdRoot.GetProperty("status").GetInt32() == (int)TicketStatus.Escalated,
+        "urgent ticket automatically requires human escalation");
+    Check(createdRoot.GetProperty("version").GetInt32() == 1, "initial version 1");
+
+    var own = await Get(client, "/operator/v1/tickets/" + ticketId, operator1);
+    Check(own.StatusCode == HttpStatusCode.OK, "own tenant reads ticket");
+    var foreign = await Get(client, "/operator/v1/tickets/" + ticketId, operator2);
+    Check(foreign.StatusCode == HttpStatusCode.NotFound, "cross-tenant read concealed");
+
+    var unauthorizedTransition = await Post(client,
+        "/operator/v1/tickets/" + ticketId + "/resolve",
+        """{"expectedVersion":1}""", operator1);
+    Check(unauthorizedTransition.StatusCode == HttpStatusCode.Forbidden,
+        "ordinary operator cannot resolve incidents");
+
+    var crossTenant = await Post(client,
+        "/operator/v1/tickets/" + ticketId + "/escalate",
+        """{"expectedVersion":1}""", operator2);
+    Check(crossTenant.StatusCode == HttpStatusCode.NotFound,
+        "cross-tenant mutation concealed");
+
+    var resolved = await Post(client,
+        "/operator/v1/tickets/" + ticketId + "/resolve",
+        """{"expectedVersion":1}""", supervisor1);
+    Check(resolved.StatusCode == HttpStatusCode.OK, "supervisor resolves incident");
+    using var resolvedJson = JsonDocument.Parse(await resolved.Content.ReadAsStringAsync());
+    Check(resolvedJson.RootElement.GetProperty("version").GetInt32() == 2,
+        "optimistic concurrency version increments");
+
+    var stale = await Post(client,
+        "/operator/v1/tickets/" + ticketId + "/resolve",
+        """{"expectedVersion":1}""", supervisor1);
+    Check(stale.StatusCode == HttpStatusCode.Conflict,
+        "stale state transition returns conflict");
+
+    var tenant2Ticket = await Post(client, "/operator/v1/tickets",
+        """{"category":"Heating","priority":"Routine"}""", operator2);
+    Check(tenant2Ticket.StatusCode == HttpStatusCode.Created,
+        "second tenant can create independently");
+
+    await VerifyRlsAsync(appConn!, Guid.Parse(Tenant1), Guid.Parse(Tenant2));
+    Console.WriteLine("RC-02 PASS: JWT authorization, two-tenant HTTP isolation, PostgreSQL RLS and audit.");
+    return 0;
+}
+catch (Exception error)
+{
+    // Deliberately never print payload, credentials, SQL parameters or identifiers.
+    Console.Error.WriteLine("RC-02 FAIL: " + error.GetType().Name);
+    return 1;
+}
+
+static async Task SetupDatabaseAsync(string connection)
+{
+    await using var db = new NpgsqlConnection(connection);
+    await db.OpenAsync();
+    var migration = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "migrations", "001_ticket_workflow.sql"));
+    await using (var cmd = new NpgsqlCommand(migration, db))
+        await cmd.ExecuteNonQueryAsync();
+
+    await using (var grant = new NpgsqlCommand("""
+        DO $do$
+        BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'residentchat_synthetic_app') THEN
+                CREATE ROLE residentchat_synthetic_app LOGIN PASSWORD 'synthetic-only-pass';
+            END IF;
+        END
+        $do$;
+        GRANT USAGE ON SCHEMA residentchat TO residentchat_synthetic_app;
+        GRANT SELECT, INSERT, UPDATE ON residentchat.tickets TO residentchat_synthetic_app;
+        GRANT SELECT, INSERT ON residentchat.ticket_audit TO residentchat_synthetic_app;
+        GRANT USAGE, SELECT ON SEQUENCE residentchat.ticket_audit_id_seq
+            TO residentchat_synthetic_app;
+        """, db))
+        await grant.ExecuteNonQueryAsync();
+}
+
+static async Task VerifyRlsAsync(string connection, Guid tenant1, Guid tenant2)
+{
+    await using var db = new NpgsqlConnection(connection);
+    await db.OpenAsync();
+    await using var cmd = new NpgsqlCommand("SELECT count(*) FROM residentchat.tickets", db);
+    var withoutTenant = (long)(await cmd.ExecuteScalarAsync())!;
+    Check(withoutTenant == 0, "RLS default deny without session tenant");
+
+    await using var tx = await db.BeginTransactionAsync();
+    await using var set = new NpgsqlCommand(
+        "SELECT set_config('residentchat.tenant_id', @tenant, true)", db, tx);
+    set.Parameters.AddWithValue("tenant", tenant1.ToString("D"));
+    await set.ExecuteNonQueryAsync();
+
+    await using var count = new NpgsqlCommand(
+        "SELECT count(*) FROM residentchat.tickets WHERE tenant_id = @tenant", db, tx);
+    count.Parameters.AddWithValue("tenant", tenant2);
+    var otherCount = (long)(await count.ExecuteScalarAsync())!;
+    Check(otherCount == 0, "DB role cannot read other tenant with RLS");
+    await tx.RollbackAsync();
+}
+
+static async Task<HttpResponseMessage> Post(HttpClient client,
+    string path, string payload, string? jwt)
+{
+    using var req = new HttpRequestMessage(HttpMethod.Post, path);
+    req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+    if (jwt is not null)
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+    return await client.SendAsync(req);
+}
+
+static async Task<HttpResponseMessage> Get(HttpClient client, string path, string jwt)
+{
+    using var req = new HttpRequestMessage(HttpMethod.Get, path);
+    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+    return await client.SendAsync(req);
+}
+
+static string Jwt(string tenantId, string role, string subject)
+{
+    var header = Encode(JsonSerializer.SerializeToUtf8Bytes(new { alg = "HS256", typ = "JWT" }));
+    var payload = Encode(JsonSerializer.SerializeToUtf8Bytes(new {
+        iss = Issuer, aud = Audience, sub = subject, tenant_id = tenantId, role,
+        exp = DateTimeOffset.UtcNow.AddMinutes(10).ToUnixTimeSeconds()
+    }));
+    var signed = header + "." + payload;
+    var signature = HMACSHA256.HashData(Encoding.UTF8.GetBytes(SigningKey),
+        Encoding.ASCII.GetBytes(signed));
+    return signed + "." + Encode(signature);
+}
+
+static string Encode(byte[] input) =>
+    Convert.ToBase64String(input).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+static void Check(bool value, string label)
+{
+    if (!value) throw new InvalidOperationException(label);
+}
+
+static async Task<SyntheticServer> StartAsync(
+    string connection, bool enabled, bool configured)
+{
+    var overrides = new Dictionary<string, string?>
+    {
+        ["ResidentChat:Operator:Enabled"] = enabled.ToString(),
+        ["ResidentChat:Operator:Issuer"] = Issuer,
+        ["ResidentChat:Operator:Audience"] = Audience,
+        ["ResidentChat:Operator:JwtSigningKey"] = configured ? SigningKey : "",
+        ["ResidentChat:Operator:AuditHmacKey"] = AuditKey,
+        ["ResidentChat:Operator:ConnectionString"] = connection,
+        ["ResidentChat:Operator:AllowedTenantIds:0"] = Tenant1,
+        ["ResidentChat:Operator:AllowedTenantIds:1"] = Tenant2
+    };
+    var app = ResidentChatApp.Build([], overrides);
+    app.Urls.Add("http://127.0.0.1:0");
+    await app.StartAsync();
+    var server = app.Services.GetRequiredService<IServer>();
+    var urls = server.Features.Get<IServerAddressesFeature>()
+        ?? throw new InvalidOperationException("Missing synthetic listener");
+    return new SyntheticServer(app, new HttpClient {
+        BaseAddress = new Uri(urls.Addresses.Single(
+            a => a.StartsWith("http://127.0.0.1:", StringComparison.Ordinal)))
+    });
+}
+
+internal sealed class SyntheticServer(WebApplication app, HttpClient client) : IAsyncDisposable
+{
+    public HttpClient Client { get; } = client;
+    public async ValueTask DisposeAsync()
+    {
+        Client.Dispose();
+        await app.StopAsync();
+        await app.DisposeAsync();
+    }
+}

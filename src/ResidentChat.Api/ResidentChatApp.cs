@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using ResidentChat.Core.Ingress;
+using ResidentChat.Api.Operator;
 
 namespace ResidentChat.Api;
 
@@ -34,7 +35,16 @@ public static class ResidentChatApp
         builder.Services.AddSingleton(policy);
         builder.Services.AddSingleton<BoundedUpdateDeduplicator>();
 
+        // No external AI providers or message-forwarding dependencies are registered.
+        OperatorApi.Register(builder);
+        builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
+        builder.Logging.AddFilter("Microsoft.AspNetCore.Routing.EndpointMiddleware", LogLevel.Warning);
+        builder.Logging.AddFilter("Microsoft.AspNetCore.Http.Result", LogLevel.Warning);
+
         var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        OperatorApi.Map(app);
         app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
         // No Telegram outbound calls, local/remote AI calls, message storage or processing yet.

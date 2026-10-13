@@ -1,0 +1,41 @@
+name: RC-02 isolated operator and RLS gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "ResidentChat/rc-02-*"
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: synthetic_ci_only
+          POSTGRES_DB: residentchat_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d residentchat_test"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      RC02_TEST_PG_ADMIN: "Host=localhost;Port=5432;Database=residentchat_test;Username=postgres;Password=synthetic_ci_only"
+      RC02_TEST_PG_RUNTIME: "Host=localhost;Port=5432;Database=residentchat_test;Username=residentchat_synthetic_app;Password=synthetic-only-pass"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build with warnings-as-errors
+        run: dotnet build tests/ResidentChat.OperatorSmokeTests/ResidentChat.OperatorSmokeTests.csproj -c Release
+      - name: Synthetic PostgreSQL and operator HTTP security gate
+        run: dotnet run --no-build --project tests/ResidentChat.OperatorSmokeTests/ResidentChat.OperatorSmokeTests.csproj -c Release
