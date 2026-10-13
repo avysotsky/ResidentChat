@@ -161,14 +161,50 @@ static async Task RunLocalModelSecurityLabAsync()
     Check(!LocalModelClassifier.IsApprovedEndpoint(new Uri("http://127.0.0.1:11434/other")),
         "other endpoint denied");
 
+    // Assert that Ukrainian and Russian text reach the fake local API intact.
+    // This gate never invokes Ollama or an external model.
+    const string ukrainian = "Тест: у під'їзді не працює ліфт.";
+    const string russian = "Тест: в подъезде прорвало трубу.";
+    Check(Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(ukrainian)) == ukrainian,
+        "Ukrainian UTF-8 roundtrip");
+    Check(Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(russian)) == russian,
+        "Russian UTF-8 roundtrip");
+
     const string valid = "{\"intent\":\"maintenance\",\"category\":\"elevator\",\"urgency\":\"urgent\",\"requires_human\":true}";
     using (var classifier = new LocalModelClassifier(loopback, "qwen3:4b",
-        new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, valid))))
+        new SyntheticModelHandler(request =>
+        {
+            var raw = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            using var json = JsonDocument.Parse(raw);
+            var prompt = json.RootElement.GetProperty("prompt").GetString()!;
+            Check(prompt.Contains(ukrainian, StringComparison.Ordinal),
+                "Ukrainian content preserved inside local JSON payload");
+            Check(!prompt.Contains("????", StringComparison.Ordinal),
+                "Ukrainian prompt not corrupted to question marks");
+            return ModelResponse(HttpStatusCode.OK, valid);
+        })))
     {
         var result = await classifier.ClassifyAsync("Тест: ліфт не працює");
         Check(result.Valid && result.Intent == ResidentIntent.Maintenance
             && result.Category == "elevator" && result.RequiresHuman,
             "synthetic Ukrainian elevator request classification");
+    }
+
+    using (var classifier = new LocalModelClassifier(loopback, "qwen3:1.7b",
+        new SyntheticModelHandler(request =>
+        {
+            var raw = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            using var json = JsonDocument.Parse(raw);
+            var prompt = json.RootElement.GetProperty("prompt").GetString()!;
+            Check(prompt.Contains(russian, StringComparison.Ordinal),
+                "Russian content preserved inside local JSON payload");
+            Check(!prompt.Contains("????", StringComparison.Ordinal),
+                "Russian prompt not corrupted to question marks");
+            return ModelResponse(HttpStatusCode.OK, valid);
+        })))
+    {
+        var result = await classifier.ClassifyAsync(russian);
+        Check(result.Valid, "synthetic Russian ingress validated");
     }
 
     const string falseSafeEmergency = "{\"intent\":\"emergency\",\"category\":null,\"urgency\":\"routine\",\"requires_human\":false}";
