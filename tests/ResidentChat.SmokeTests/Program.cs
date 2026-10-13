@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using ResidentChat.Api;
 using ResidentChat.Core.Ingress;
+using ResidentChat.Core.LocalAi;
 
 const string Secret = "SyntheticOnlyWebhookSecret_0123456789ABCDEF";
 const long AllowedChat = -1001234567890;
@@ -92,6 +93,7 @@ try
             "response cannot echo chat content");
     }
 
+    await RunLocalModelSecurityLabAsync();
     Console.WriteLine("RC-01 PASS: synthetic policy + loopback HTTP admission/security checks.");
     return 0;
 }
@@ -145,6 +147,72 @@ static async Task<LocalTestServer> StartAsync(bool enabled, bool configured)
         ?? throw new InvalidOperationException("Missing loopback listener");
     var url = addresses.Addresses.Single(a => a.StartsWith("http://127.0.0.1:", StringComparison.Ordinal));
     return new LocalTestServer(app, new HttpClient { BaseAddress = new Uri(url) });
+}
+
+
+static async Task RunLocalModelSecurityLabAsync()
+{
+    var loopback = new Uri("http://127.0.0.1:11434/api/generate");
+    Check(LocalModelClassifier.IsApprovedEndpoint(loopback), "approved Ollama loopback");
+    Check(!LocalModelClassifier.IsApprovedEndpoint(new Uri("https://api.vendor.com/api/generate")),
+        "remote provider denied");
+    Check(!LocalModelClassifier.IsApprovedEndpoint(new Uri("http://localhost:11434/api/generate")),
+        "hostname or DNS alias denied");
+    Check(!LocalModelClassifier.IsApprovedEndpoint(new Uri("http://127.0.0.1:11434/other")),
+        "other endpoint denied");
+
+    const string valid = "{\"intent\":\"maintenance\",\"category\":\"elevator\",\"urgency\":\"urgent\",\"requires_human\":true}";
+    using (var classifier = new LocalModelClassifier(loopback, "qwen3:4b",
+        new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, valid))))
+    {
+        var result = await classifier.ClassifyAsync("Тест: ліфт не працює");
+        Check(result.Valid && result.Intent == ResidentIntent.Maintenance
+            && result.Category == "elevator" && result.RequiresHuman,
+            "synthetic Ukrainian elevator request classification");
+    }
+
+    const string falseSafeEmergency = "{\"intent\":\"emergency\",\"category\":null,\"urgency\":\"routine\",\"requires_human\":false}";
+    var emergency = LocalModelClassifier.ParseDecision(falseSafeEmergency);
+    Check(emergency.Valid && emergency.RequiresHuman
+        && emergency.Urgency == ResidentUrgency.Emergency,
+        "C# overrides unsafe model emergency decision");
+    Check(!LocalModelClassifier.ParseDecision("{\"intent\":\"spam\",\"category\":null,\"urgency\":\"routine\",\"requires_human\":false,\"action\":\"ban\"}").Valid,
+        "model cannot smuggle delete/ban tool instruction");
+
+    using (var classifier = new LocalModelClassifier(loopback, "qwen3:4b",
+        new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.Found, valid))))
+    {
+        var result = await classifier.ClassifyAsync("Тест: протікання");
+        Check(!result.Valid && result.RequiresHuman,
+            "redirect never followed; no remote fallback");
+    }
+
+    using (var classifier = new LocalModelClassifier(loopback, "qwen3:4b",
+        new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, "{bad-json"))))
+    {
+        var result = await classifier.ClassifyAsync("Тест: не працює вода");
+        Check(!result.Valid && result.RequiresHuman,
+            "malformed local response safely escalated");
+        var tooLong = await classifier.ClassifyAsync(
+            new string('a', LocalModelClassifier.MaxMessageChars + 1));
+        Check(!tooLong.Valid && tooLong.RequiresHuman,
+            "oversized input rejected before model invocation");
+    }
+}
+
+static HttpResponseMessage ModelResponse(HttpStatusCode status, string result) =>
+    new(status)
+    {
+        Content = new StringContent(JsonSerializer.Serialize(new { response = result }),
+            Encoding.UTF8, "application/json")
+    };
+
+internal sealed class SyntheticModelHandler(
+    Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken cancellationToken) =>
+        Task.FromResult(responder(request));
 }
 
 internal sealed class LocalTestServer(WebApplication app, HttpClient client) : IAsyncDisposable
