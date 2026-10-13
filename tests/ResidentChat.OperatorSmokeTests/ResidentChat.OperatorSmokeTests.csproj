@@ -8,5 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/ResidentChat.Api/ResidentChat.Api.csproj" />
+    <Content Include="../../db/migrations/001_ticket_workflow.sql" Link="migrations/001_ticket_workflow.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
