@@ -1,0 +1,25 @@
+name: RC-01 synthetic security gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "ResidentChat/**"
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build RC-01
+        run: dotnet build tests/ResidentChat.SmokeTests/ResidentChat.SmokeTests.csproj -c Release
+      - name: Synthetic loopback HTTP gate
+        run: dotnet run --no-build --project tests/ResidentChat.SmokeTests/ResidentChat.SmokeTests.csproj -c Release
