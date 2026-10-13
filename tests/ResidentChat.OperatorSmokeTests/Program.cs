@@ -125,7 +125,7 @@ static async Task SetupDatabaseAsync(string connection)
 {
     await using var db = new NpgsqlConnection(connection);
     await db.OpenAsync();
-    var migration = await File.ReadAllTextAsync("db/migrations/001_ticket_workflow.sql");
+    var migration = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "migrations", "001_ticket_workflow.sql"));
     await using (var cmd = new NpgsqlCommand(migration, db))
         await cmd.ExecuteNonQueryAsync();
 
