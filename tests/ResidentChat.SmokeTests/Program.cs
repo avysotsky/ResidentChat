@@ -119,6 +119,10 @@ static async Task<(HttpStatusCode Status, string Body)> PostAsync(
     using var request = new HttpRequestMessage(HttpMethod.Post, "/telegram/webhook");
     request.Content = new StringContent(json, Encoding.UTF8);
     request.Content.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
+    // Send headers first for oversized payloads: Kestrel can reject with 413 without
+    // tearing down a connection while the client is still uploading the body.
+    if (Encoding.UTF8.GetByteCount(json) > ResidentChatApp.MaxWebhookBytes)
+        request.Headers.ExpectContinue = true;
     if (secret is not null)
         request.Headers.Add("X-Telegram-Bot-Api-Secret-Token", secret);
     using var response = await client.SendAsync(request);
