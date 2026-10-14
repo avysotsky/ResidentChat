@@ -61,3 +61,54 @@ before it could be displayed. FAQ results are **not** yet passed to Ollama.
 Their text must be treated as data and may not confer model or application
 authority. No hosted LLM, cloud fallback, public Telegram integration or
 automatic moderator action is permitted.
+
+## Dedicated PostgreSQL acceptance gate — prepared, separately executed
+
+Standalone test project:
+tests/ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj
+
+Launch script: tools/rc-03b-faq-pg-acceptance.sh (invoke with bash).
+
+The mandatory ResidentChat.SmokeTests project now references the acceptance
+executable only to COMPILE it within WSL2. The regular smoke runner does not
+EXECUTE the database suite, and its PASS must not be called PostgreSQL PASS.
+
+The local launcher requires the .NET 10 SDK, initdb, pg_ctl, psql, a
+pre-restored offline NuGet package cache, and an unprivileged WSL2 user.
+Run from a fixed PR SHA workspace while respecting the shared execution.lock.
+It creates a disposable PostgreSQL cluster under a private Unix-socket
+directory; TCP is disabled, the database name starts with
+residentchat_faq_acceptance_, and the runtime role is a separate
+residentchat_faq_reader with SELECT only. The migration owner is distinct.
+It stops PostgreSQL and deletes the temporary cluster on exit.
+
+The program verifies on a real PostgreSQL server:
+1. Trusted migration 002_approved_faq.sql succeeds; NULL approval is rejected.
+2. Table RLS is enabled and forced; the runtime role is not owner, superuser,
+   BYPASSRLS, CREATEDB or CREATEROLE and has SELECT-only privileges.
+3. Two fabricated documents from different tenant IDs cannot cross RLS.
+4. Without a scoped tenant, no rows are visible. A transaction-local tenant
+   setting does not survive COMMIT or ROLLBACK or pooled connection reuse.
+5. Actual Cyrillic lexical FTS returns each tenant's own item, but no
+   cross-tenant item; unknown queries return none; SQL-like text is data.
+6. Direct runtime UPDATE returns permission denied.
+7. Cleanup works even after failure; no production database is touched.
+
+Exact output contract proposed for WSL2 operator:
+autotest-results branch, faq-pg/pr-8/<FULL_SHA>.json.
+Include immutable SHA, stage statuses (offline restore, build, ephemeral
+PostgreSQL, migration, test, cleanup), test exit code, and no secrets or
+message bodies. Preserve existing WSL2 security and Qwen gates; run this
+as a SEPARATE opt-in stage behind the existing execution.lock. Do not
+use GitHub Actions, Relay Queue or cloud databases. A stage that was not
+executed must be recorded as NOT_RUN, never as PASS.
+
+Important: the current WSL2 watcher has not yet been extended to run this
+new acceptance. Until a PostgreSQL execution report exists for an exact
+PR #8 SHA, RC-03b is NOT database-qualified.
+
+Tenant GUC is a defense-in-depth database filter, not proof of operator
+identity. A future API must derive the tenant from a verified signed claim,
+never from resident messages, model output or user-supplied parameters.
+No FAQ HTTP route, runtime connection, real content, or Telegram outbound
+integration is enabled by these changes.
