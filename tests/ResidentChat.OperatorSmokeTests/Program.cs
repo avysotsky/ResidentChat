@@ -41,6 +41,53 @@ try
     }
     await SetupDatabaseAsync(adminConn!);
 
+    // Explicit owner-triggered laboratory operation. Unlike automated
+    // integration acceptance, this path requires a HUMAN to type the exact
+    // case confirmation in the launch command. Still synthetic credentials.
+    if (args.Length > 0)
+    {
+        Check(Environment.GetEnvironmentVariable("RC05_TEST_ISOLATED") == "1",
+            "manual demonstration must use ephemeral lab only");
+        Check(args.Length == 4 && args[0] == "--approve"
+            && args[1] == "ALPHA-WATER" && args[2] == "--confirm",
+            "only opt-in synthetic ALPHA-WATER approval is supported");
+        var tenant = Guid.Parse(Tenant1);
+        var plan = DemoDispatchPolicy.Plan(tenant,
+            new ResidentDecision(true, ResidentIntent.Maintenance, "water",
+                ResidentUrgency.Urgent, true));
+        Console.WriteLine("RC-05 OPERATOR PREVIEW: ALPHA-WATER | Water | Urgent | human approval");
+        Check(DemoApprovalPolicy.TryApprove(tenant, args[1],
+            plan, args[3], out var approved) && approved is not null,
+            "operator must explicitly confirm exact approval text");
+        await CheckTotalTicketsAsync(adminConn!, 0,
+            "manual demonstration has no ticket before approval");
+        await using var demonstration = await StartAsync(appConn!, true, true);
+        var approvedRequest = JsonSerializer.Serialize(new {
+            category = approved!.Category.ToString(),
+            priority = approved.Priority.ToString()
+        });
+        using var response = await Post(demonstration.Client,
+            "/operator/v1/tickets", approvedRequest,
+            Jwt(Tenant1, "operator", "synthetic-human-demo"));
+        Check(response.StatusCode == HttpStatusCode.Created,
+            "approved synthetic operator POST returns HTTP 201");
+        using var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var id = payload.RootElement.GetProperty("ticketId").GetGuid();
+        Check(payload.RootElement.GetProperty("tenantId").GetGuid() == tenant
+            && payload.RootElement.GetProperty("status").GetInt32()
+                == (int)TicketStatus.Escalated,
+            "signed identity and urgent escalation preserved");
+        await CheckTotalTicketsAsync(adminConn!, 1,
+            "manual demonstration wrote exactly one synthetic ticket");
+        using var verify = await Get(demonstration.Client,
+            "/operator/v1/tickets/" + id, Jwt(Tenant1, "operator", "synthetic-human-demo"));
+        Check(verify.StatusCode == HttpStatusCode.OK,
+            "approved ticket is readable via authorized operator API");
+        Console.WriteLine("RC-05 MANUAL LAB PASS: one explicitly approved synthetic ticket persisted");
+        Console.WriteLine("RC-05 LAB CLEANUP: disposable database will be deleted by launcher");
+        return 0;
+    }
+
     await using (var disabled = await StartAsync(appConn!, false, true))
     {
         var response = await Post(disabled.Client, "/operator/v1/tickets",
