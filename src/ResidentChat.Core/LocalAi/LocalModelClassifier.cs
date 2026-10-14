@@ -98,9 +98,6 @@ public sealed class LocalModelClassifier : IDisposable
     private static ResidentDecision ApplyIndependentSafetyFloor(
         string message, ResidentDecision decision)
     {
-        if (!decision.Valid)
-            return decision;
-
         var danger = ContainsAny(message, ImmediateDangerMarkers);
         var threat = ContainsAny(message, ThreatMarkers);
         var injection = HasSuspiciousInstruction(message);
@@ -253,7 +250,7 @@ public sealed class LocalModelClassifier : IDisposable
             using var response = await _client.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (response.StatusCode != HttpStatusCode.OK)
-                return ResidentDecision.ReviewRequired;
+                return ApplyIndependentSafetyFloor(message, ResidentDecision.ReviewRequired);
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var buffer = new MemoryStream();
@@ -262,7 +259,7 @@ public sealed class LocalModelClassifier : IDisposable
             while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
             {
                 if (buffer.Length + read > MaxOuterResponseBytes)
-                    return ResidentDecision.ReviewRequired;
+                    return ApplyIndependentSafetyFloor(message, ResidentDecision.ReviewRequired);
                 buffer.Write(chunk, 0, read);
             }
 
@@ -271,34 +268,32 @@ public sealed class LocalModelClassifier : IDisposable
             if (outer.RootElement.ValueKind != JsonValueKind.Object
                 || !outer.RootElement.TryGetProperty("response", out var inner)
                 || inner.ValueKind != JsonValueKind.String)
-                return ResidentDecision.ReviewRequired;
+                return ApplyIndependentSafetyFloor(message, ResidentDecision.ReviewRequired);
 
             var text = inner.GetString();
             if (text is null || text.Length > MaxInnerResponseChars)
-                return ResidentDecision.ReviewRequired;
+                return ApplyIndependentSafetyFloor(message, ResidentDecision.ReviewRequired);
 
             var decision = ParseDecision(text);
-            if (!decision.Valid)
-                return decision;
-            // Model instructions and typed output cannot lower clearly
-            // indicated safety escalation, even when Qwen returns routine/other.
+            // Model responses cannot remove safety escalation; invalid model
+            // output remains invalid while high-risk text raises urgency.
             return ApplyIndependentSafetyFloor(message, decision);
         }
         catch (HttpRequestException)
         {
-            return ResidentDecision.ReviewRequired;
+            return ApplyIndependentSafetyFloor(message, ResidentDecision.ReviewRequired);
         }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return ResidentDecision.ReviewRequired;
+            return ApplyIndependentSafetyFloor(message, ResidentDecision.ReviewRequired);
         }
         catch (JsonException)
         {
-            return ResidentDecision.ReviewRequired;
+            return ApplyIndependentSafetyFloor(message, ResidentDecision.ReviewRequired);
         }
         catch (IOException)
         {
-            return ResidentDecision.ReviewRequired;
+            return ApplyIndependentSafetyFloor(message, ResidentDecision.ReviewRequired);
         }
     }
 
