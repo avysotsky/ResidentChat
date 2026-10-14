@@ -52,20 +52,20 @@ try
             && args[1] == "ALPHA-WATER" && args[2] == "--confirm",
             "only opt-in synthetic ALPHA-WATER approval is supported");
         var tenant = Guid.Parse(Tenant1);
-        var plan = DemoDispatchPolicy.Plan(tenant,
+        var manualPlan = DemoDispatchPolicy.Plan(tenant,
             new ResidentDecision(true, ResidentIntent.Maintenance, "water",
                 ResidentUrgency.Urgent, true));
         Console.WriteLine("RC-05 OPERATOR PREVIEW: ALPHA-WATER | Water | Urgent | human approval");
         Check(DemoApprovalPolicy.TryApprove(tenant, args[1],
-            plan, args[3], out var approved) && approved is not null,
+            manualPlan, args[3], out var manualApproved) && manualApproved is not null,
             "operator must explicitly confirm exact approval text");
-        var confirmed = approved ?? throw new InvalidOperationException("No approved synthetic command");
+        var manualConfirmed = manualApproved ?? throw new InvalidOperationException("No approved synthetic command");
         await CheckTotalTicketsAsync(adminConn!, 0,
             "manual demonstration has no ticket before approval");
         await using var demonstration = await StartAsync(appConn!, true, true);
         var approvedRequest = JsonSerializer.Serialize(new {
-            category = confirmed.Category.ToString(),
-            priority = confirmed.Priority.ToString()
+            category = manualConfirmed.Category.ToString(),
+            priority = manualConfirmed.Priority.ToString()
         });
         using var response = await Post(demonstration.Client,
             "/operator/v1/tickets", approvedRequest,
