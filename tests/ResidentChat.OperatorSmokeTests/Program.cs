@@ -9,6 +9,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using ResidentChat.Api;
 using ResidentChat.Core.Tickets;
+using ResidentChat.Core.Demo;
+using ResidentChat.Core.LocalAi;
 
 const string Issuer = "residentchat.synthetic.test";
 const string Audience = "residentchat.synthetic.operator";
@@ -24,6 +26,19 @@ try
     var appConn = Environment.GetEnvironmentVariable("RC02_TEST_PG_RUNTIME");
     Check(!string.IsNullOrWhiteSpace(adminConn) && !string.IsNullOrWhiteSpace(appConn),
         "synthetic Postgres connection environment required");
+    if (Environment.GetEnvironmentVariable("RC05_TEST_ISOLATED") == "1")
+    {
+        var admin = new NpgsqlConnectionStringBuilder(adminConn);
+        var runtime = new NpgsqlConnectionStringBuilder(appConn);
+        Check((admin.Host ?? "").StartsWith("/tmp/rc05pg.", StringComparison.Ordinal)
+            && admin.Host == runtime.Host
+            && (admin.Database ?? "").StartsWith("residentchat_approval_lab_", StringComparison.Ordinal)
+            && admin.Database == runtime.Database
+            && admin.Port == runtime.Port
+            && admin.Username == "postgres"
+            && runtime.Username == "residentchat_synthetic_app",
+            "approval lab requires isolated Unix socket and synthetic database");
+    }
     await SetupDatabaseAsync(adminConn!);
 
     await using (var disabled = await StartAsync(appConn!, false, true))
@@ -64,8 +79,29 @@ try
         """{"category":"SomethingElse","priority":"Routine"}""", operator1)).StatusCode
         == HttpStatusCode.BadRequest, "unknown category rejected");
 
+    // RC-05: simulate a SPECIFIC human approval in an isolated synthetic-only
+    // acceptance. No HTTP ticket POST occurs before the explicit C# gate passes.
+    // This test cannot establish real human identity or production approval UX.
+    var plan = DemoDispatchPolicy.Plan(Guid.Parse(Tenant1),
+        new ResidentDecision(true, ResidentIntent.Maintenance,
+            "water", ResidentUrgency.Urgent, true));
+    Check(!DemoApprovalPolicy.TryApprove(Guid.Parse(Tenant1), "ALPHA-WATER",
+        plan, null, out _), "unapproved proposal must not be written");
+    Check(!DemoApprovalPolicy.TryApprove(Guid.Parse(Tenant2), "ALPHA-WATER",
+        plan, "APPROVE ALPHA-WATER", out _), "different-tenant approval denied");
+    await CheckTotalTicketsAsync(adminConn!, 0, "before any approved HTTP POST");
+
+    Check(DemoApprovalPolicy.TryApprove(Guid.Parse(Tenant1), "ALPHA-WATER",
+        plan, "APPROVE ALPHA-WATER", out var approved) && approved is not null,
+        "synthetic operator confirmation creates exact metadata command");
+    var approvedJson = JsonSerializer.Serialize(new
+    {
+        category = approved!.Category.ToString(),
+        priority = approved.Priority.ToString()
+    });
+
     var created = await Post(client, "/operator/v1/tickets",
-        """{"category":"Water","priority":"Urgent"}""", operator1);
+        approvedJson, operator1);
     Check(created.StatusCode == HttpStatusCode.Created, "synthetic urgent ticket created");
     using var createdJson = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
     var createdRoot = createdJson.RootElement;
@@ -73,6 +109,10 @@ try
     Check(createdRoot.GetProperty("status").GetInt32() == (int)TicketStatus.Escalated,
         "urgent ticket automatically requires human escalation");
     Check(createdRoot.GetProperty("version").GetInt32() == 1, "initial version 1");
+    Check(createdRoot.GetProperty("tenantId").GetGuid() == Guid.Parse(Tenant1)
+        && createdRoot.GetProperty("category").GetInt32() == (int)TicketCategory.Water,
+        "approved proposal persisted under signed operator tenant");
+    await CheckTotalTicketsAsync(adminConn!, 1, "exactly one ticket after confirmed HTTP POST");
 
     var own = await Get(client, "/operator/v1/tickets/" + ticketId, operator1);
     Check(own.StatusCode == HttpStatusCode.OK, "own tenant reads ticket");
@@ -119,6 +159,18 @@ catch (Exception error)
     // Deliberately never print payload, credentials, SQL parameters or identifiers.
     Console.Error.WriteLine("RC-02 FAIL: " + error.GetType().Name);
     return 1;
+}
+
+static async Task CheckTotalTicketsAsync(string adminConnection,
+    long expected, string label)
+{
+    // Verification uses only the ephemeral migration owner supplied to the
+    // synthetic lab. Application reads MUST continue using the RLS role.
+    await using var db = new NpgsqlConnection(adminConnection);
+    await db.OpenAsync();
+    await using var cmd = new NpgsqlCommand(
+        "SELECT count(*) FROM residentchat.tickets", db);
+    Check((long)(await cmd.ExecuteScalarAsync())! == expected, label);
 }
 
 static async Task SetupDatabaseAsync(string connection)
