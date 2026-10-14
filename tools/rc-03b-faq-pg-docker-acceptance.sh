@@ -110,14 +110,12 @@ fi
 
 echo "RC-03B SOURCE pinned SHA: $sha"
 echo "RC-03B starting disposable offline PostgreSQL..."
+# The official image bootstraps via psql after deliberately clearing PGHOST.
+# Bind our ephemeral socket directory at /var/run/postgresql, the default
+# bootstrap path. The .NET client sees the same socket under $socket_dir.
 docker run -d --pull never --name "$pg_container" \
     --network none --cpus 1 --memory 512m --pids-limit 128 \
     --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
-    # PostgreSQL's official Docker entrypoint bootstraps with psql and
-    # explicitly CLEARS PGHOST. Mount our temporary socket directory at
-    # /var/run/postgresql, the entrypoint's own default socket location.
-    # Dotnet mounts the same directory at $socket_dir separately, so its
-    # strict /tmp/rc03bpg.* acceptance connection guard remains in effect.
     --mount "type=bind,src=$socket_dir,dst=/var/run/postgresql" \
     -e POSTGRES_HOST_AUTH_METHOD=trust \
     "$pg_image" -c listen_addresses= >/dev/null
