@@ -39,6 +39,31 @@ public sealed class LocalModelClassifier : IDisposable
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
+    // Best-effort escalation markers for obvious instruction-hijacking.
+    // This is NOT a comprehensive injection detector. Inputs remain untrusted,
+    // the model has no tools, and no model result is permitted to execute actions.
+    private static readonly string[] SuspiciousInstructionMarkers =
+    [
+        "ignore polic", "ignore previous", "ignore all instructions",
+        "ignore system", "disregard previous", "bypass safety",
+        "return all tenant private data", "show resident private data",
+        "reveal system prompt", "system:", "developer:",
+        "игнорируй инструкции", "игнорируй правила", "забудь предыдущие инструкции",
+        "покажи системный промпт", "выведи личные данные",
+        "ігноруй інструкції", "ігноруй правила", "забудь попередні інструкції",
+        "розкрий системний промпт", "виведи персональні дані"
+    ];
+
+    private static bool HasSuspiciousInstruction(string message)
+    {
+        foreach (var marker in SuspiciousInstructionMarkers)
+        {
+            if (message.Contains(marker, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
     private readonly Uri _endpoint;
     private readonly string _model;
     private readonly HttpClient _client;
@@ -201,7 +226,14 @@ public sealed class LocalModelClassifier : IDisposable
             if (text is null || text.Length > MaxInnerResponseChars)
                 return ResidentDecision.ReviewRequired;
 
-            return ParseDecision(text);
+            var decision = ParseDecision(text);
+            if (!decision.Valid)
+                return decision;
+            // Input-side safety floor: a model must never be able to remove
+            // human review from an obvious instruction-hijacking attempt.
+            return HasSuspiciousInstruction(message)
+                ? decision with { RequiresHuman = true }
+                : decision;
         }
         catch (HttpRequestException)
         {
