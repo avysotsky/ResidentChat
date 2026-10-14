@@ -174,17 +174,12 @@ static async Task RunLocalModelSecurityLabAsync()
     using (var classifier = new LocalModelClassifier(loopback, "qwen3:4b",
         new SyntheticModelHandler(request =>
         {
-            var raw = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
-            using var json = JsonDocument.Parse(raw);
-            var prompt = json.RootElement.GetProperty("prompt").GetString()!;
-            Check(prompt.Contains(ukrainian, StringComparison.Ordinal),
-                "Ukrainian content preserved inside local JSON payload");
-            Check(!prompt.Contains("????", StringComparison.Ordinal),
-                "Ukrainian prompt not corrupted to question marks");
+            Check(ReadSyntheticMessage(request) == ukrainian,
+                "Ukrainian content preserved through both JSON envelopes");
             return ModelResponse(HttpStatusCode.OK, valid);
         })))
     {
-        var result = await classifier.ClassifyAsync("Тест: ліфт не працює");
+        var result = await classifier.ClassifyAsync(ukrainian);
         Check(result.Valid && result.Intent == ResidentIntent.Maintenance
             && result.Category == "elevator" && result.RequiresHuman,
             "synthetic Ukrainian elevator request classification");
@@ -193,13 +188,8 @@ static async Task RunLocalModelSecurityLabAsync()
     using (var classifier = new LocalModelClassifier(loopback, "qwen3:1.7b",
         new SyntheticModelHandler(request =>
         {
-            var raw = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
-            using var json = JsonDocument.Parse(raw);
-            var prompt = json.RootElement.GetProperty("prompt").GetString()!;
-            Check(prompt.Contains(russian, StringComparison.Ordinal),
-                "Russian content preserved inside local JSON payload");
-            Check(!prompt.Contains("????", StringComparison.Ordinal),
-                "Russian prompt not corrupted to question marks");
+            Check(ReadSyntheticMessage(request) == russian,
+                "Russian content preserved through both JSON envelopes");
             return ModelResponse(HttpStatusCode.OK, valid);
         })))
     {
@@ -234,6 +224,20 @@ static async Task RunLocalModelSecurityLabAsync()
         Check(!tooLong.Valid && tooLong.RequiresHuman,
             "oversized input rejected before model invocation");
     }
+}
+
+// Both envelopes use System.Text.Json, which may escape Cyrillic as \\uXXXX.
+// Decode the transport envelope and then the embedded untrusted-message JSON.
+static string? ReadSyntheticMessage(HttpRequestMessage request)
+{
+    var raw = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+    using var transport = JsonDocument.Parse(raw);
+    var prompt = transport.RootElement.GetProperty("prompt").GetString()!;
+    const string marker = "\nUNTRUSTED_MESSAGE_JSON:\n";
+    var index = prompt.IndexOf(marker, StringComparison.Ordinal);
+    Check(index >= 0, "synthetic prompt message boundary present");
+    using var payload = JsonDocument.Parse(prompt[(index + marker.Length)..]);
+    return payload.RootElement.GetProperty("message").GetString();
 }
 
 static HttpResponseMessage ModelResponse(HttpStatusCode status, string result) =>
