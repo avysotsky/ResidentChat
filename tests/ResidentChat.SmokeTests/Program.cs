@@ -245,6 +245,85 @@ static async Task RunLocalModelSecurityLabAsync()
             "ordinary FAQ is not escalated by injection heuristics");
     }
 
+    // Offline adversarial matrix: feed a deliberately incorrect routine/other
+    // Ollama response. Dangerous content must trigger independent C# escalation
+    // regardless of the model's classification or generated urgency.
+    (string Id, string Message)[] immediateDangerCases =
+    [
+        ("fire_ru", "Тест: пожар в доме, срочно нужна помощь."),
+        ("fire_ua", "Тест: пожежа у будинку, є люди."),
+        ("gas_ru", "Тест: в подъезде пахнет газом."),
+        ("gas_ua", "Тест: відчувається запах газу у підвалі."),
+        ("lift_ru", "Тест: люди застряли в лифте."),
+        ("lift_ua", "Тест: люди застрягли у ліфті."),
+        ("gas_en", "Synthetic test: active gas leak in a shared corridor."),
+        ("lift_en", "Synthetic test: people trapped in elevator.")
+    ];
+    foreach (var scenario in immediateDangerCases)
+    {
+        using var guarded = new LocalModelClassifier(loopback, "qwen3:1.7b",
+            new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, falselySafeOther)));
+        var decision = await guarded.ClassifyAsync(scenario.Message);
+        Check(decision.Valid && decision.Intent == ResidentIntent.Other
+            && decision.Urgency == ResidentUrgency.Emergency && decision.RequiresHuman,
+            "immediate danger cannot be downgraded by Qwen: " + scenario.Id);
+    }
+
+    (string Id, string Message)[] explicitThreatCases =
+    [
+        ("threat_ru", "Тест: сосед угрожает убить жильца."),
+        ("threat_ua", "Тест: сусід погрожує вбити мешканця."),
+        ("threat_en", "Synthetic test: neighbor threatened to kill another resident.")
+    ];
+    foreach (var scenario in explicitThreatCases)
+    {
+        using var guarded = new LocalModelClassifier(loopback, "qwen3:1.7b",
+            new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, falselySafeOther)));
+        var decision = await guarded.ClassifyAsync(scenario.Message);
+        Check(decision.Valid && decision.Intent == ResidentIntent.Other
+            && decision.Urgency == ResidentUrgency.Urgent && decision.RequiresHuman,
+            "explicit threat must require timely human review: " + scenario.Id);
+    }
+
+    // These are not decisive indicators of imminent danger. The heuristic
+    // must not convert ordinary or ambiguous content into a confirmed emergency.
+    (string Id, string Message)[] benignAndAmbiguousCases =
+    [
+        ("outage", "Тест: лифт не работает, никто не застрял."),
+        ("scheduled_drill", "Тест: пожарные учения запланированы на завтра."),
+        ("unclear_smell", "Тест: странный запах на лестничной клетке."),
+        ("faq", "Тест: какой график работы диспетчера?"),
+        ("dispute", "Тест: соседи спорят об уборке общего коридора.")
+    ];
+    foreach (var scenario in benignAndAmbiguousCases)
+    {
+        using var guarded = new LocalModelClassifier(loopback, "qwen3:1.7b",
+            new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, falselySafeOther)));
+        var decision = await guarded.ClassifyAsync(scenario.Message);
+        Check(decision.Valid && decision.Intent == ResidentIntent.Other
+            && decision.Urgency == ResidentUrgency.Routine && !decision.RequiresHuman,
+            "undecidable message does not trigger deterministic danger floor: " + scenario.Id);
+    }
+
+    // A broken model must not suppress the known emergency urgency.
+    using (var malformedDanger = new LocalModelClassifier(loopback, "qwen3:1.7b",
+        new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, "{bad-json"))))
+    {
+        var decision = await malformedDanger.ClassifyAsync("Тест: пожежа у будинку.");
+        Check(!decision.Valid && decision.RequiresHuman
+            && decision.Urgency == ResidentUrgency.Emergency,
+            "malformed Ollama JSON preserves emergency escalation");
+    }
+
+    using (var unavailableDanger = new LocalModelClassifier(loopback, "qwen3:1.7b",
+        new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.ServiceUnavailable, ""))))
+    {
+        var decision = await unavailableDanger.ClassifyAsync("Тест: утечка газа.");
+        Check(!decision.Valid && decision.RequiresHuman
+            && decision.Urgency == ResidentUrgency.Emergency,
+            "Ollama unavailable preserves emergency escalation");
+    }
+
     const string falseSafeEmergency = "{\"intent\":\"emergency\",\"category\":null,\"urgency\":\"routine\",\"requires_human\":false}";
     var emergency = LocalModelClassifier.ParseDecision(falseSafeEmergency);
     Check(emergency.Valid && emergency.RequiresHuman
