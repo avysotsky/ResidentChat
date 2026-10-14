@@ -58,6 +58,11 @@ socket_dir="$work/socket"
 pg_container="rc03b-$(basename "$work" | tr -cd '[:alnum:]')"
 database="residentchat_faq_acceptance_ci"
 pg_started=0
+# PostgreSQL runs under the image's postgres UID, not the invoking WSL UID.
+# Allow directory traversal for that UID while keeping source code 0700.
+# The socket directory is world-writable only inside a short-lived,
+# random-named host directory, with Docker TCP networking disabled.
+chmod 711 "$work"
 
 cleanup() {
     code=$?
