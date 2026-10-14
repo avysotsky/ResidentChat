@@ -10,6 +10,8 @@
     <ProjectReference Include="../../src/ResidentChat.Api/ResidentChat.Api.csproj" />
     <ProjectReference Include="../../src/ResidentChat.Core/ResidentChat.Core.csproj" />
     <ProjectReference Include="../../tools/ResidentChat.LocalLab/ResidentChat.LocalLab.csproj" />
+    <!-- Compile the opt-in synthetic operator demo during the ordinary WSL build. -->
+    <ProjectReference Include="../../tools/ResidentChat.Demo/ResidentChat.Demo.csproj" />
     <!-- Compile-only coverage: PostgreSQL acceptance executable is NOT run by the offline smoke gate. -->
     <ProjectReference Include="../ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj" />
   </ItemGroup>
