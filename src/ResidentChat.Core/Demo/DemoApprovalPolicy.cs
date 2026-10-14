@@ -31,7 +31,7 @@ public static class DemoApprovalPolicy
                 "APPROVE " + caseId, StringComparison.Ordinal))
             return false;
 
-        if (planned?.Queue != DemoQueueKind.TicketProposal
+        if (planned is null || planned.Queue != DemoQueueKind.TicketProposal
             || planned.Proposal is not { RequiresHumanApproval: true } proposal)
             return false;
 
