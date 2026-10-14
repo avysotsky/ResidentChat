@@ -84,6 +84,9 @@ cleanup() {
             echo "=== PostgreSQL startup log (last 30 lines) ===" >&2
             docker logs --tail 30 "$pg_container" >&2 || true
         fi
+        # Graceful shutdown removes the Unix socket and permits normal
+        # cleanup by the unprivileged WSL owner of the parent directory.
+        docker stop --time 10 "$pg_container" >/dev/null 2>&1 || true
         docker rm -f "$pg_container" >/dev/null 2>&1 || true
     fi
     rm -rf -- "$work"
@@ -110,11 +113,14 @@ echo "RC-03B starting disposable offline PostgreSQL..."
 docker run -d --pull never --name "$pg_container" \
     --network none --cpus 1 --memory 512m --pids-limit 128 \
     --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
-    --mount "type=bind,src=$socket_dir,dst=$socket_dir" \
+    # PostgreSQL's official Docker entrypoint bootstraps with psql and
+    # explicitly CLEARS PGHOST. Mount our temporary socket directory at
+    # /var/run/postgresql, the entrypoint's own default socket location.
+    # Dotnet mounts the same directory at $socket_dir separately, so its
+    # strict /tmp/rc03bpg.* acceptance connection guard remains in effect.
+    --mount "type=bind,src=$socket_dir,dst=/var/run/postgresql" \
     -e POSTGRES_HOST_AUTH_METHOD=trust \
-    -e "PGHOST=$socket_dir" \
-    "$pg_image" -c listen_addresses= \
-    -c "unix_socket_directories=$socket_dir" >/dev/null
+    "$pg_image" -c listen_addresses= >/dev/null
 pg_started=1
 
 ready=0
