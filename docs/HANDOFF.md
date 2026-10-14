@@ -94,3 +94,7 @@ Customer must confirm group platform, own the chat, authorize the bot, approve p
 ## Next-agent instructions
 
 Read this file, `docs/THREAT_MODEL.md`, `docs/RC-01.md` and `docs/RC-02.md` first; inspect current `main` and Draft PRs before writing. RC-02 is stacked on the RC-01 branch, so merge order matters. Both PRs must be reviewed before merging. Do not weaken privacy invariants to simplify tests. Never send resident content to external models, even for debugging. Build/test synthetic-only. Do not claim code is compiled unless real build logs exist.
+
+## 2026-10-13 — Owner-approved WSL2 test protocol and RC-03
+
+Only the WSL2 watcher is authoritative for new development. It tests tests/ResidentChat.SmokeTests/ResidentChat.SmokeTests.csproj, producing immutable SHA-scoped JSON on autotest-results branch. Do NOT use, modify or enable GitHub Actions, tasks-v2 or Relay Queue, and never auto-merge. In RC-03, Ollama is restricted to local loopback and exercised in CI only via a synthetic handler. No real Telegram groups are connected. Three private laboratory groups are PROPOSED in docs/TEST_GROUP_LAB.md for later user creation, not programmatically created. Read docs/RC-03.md for acceptance and known limitations. RC-03 is stacked on RC-02, which is stacked on RC-01.
