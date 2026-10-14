@@ -59,12 +59,13 @@ try
         Check(DemoApprovalPolicy.TryApprove(tenant, args[1],
             plan, args[3], out var approved) && approved is not null,
             "operator must explicitly confirm exact approval text");
+        var confirmed = approved ?? throw new InvalidOperationException("No approved synthetic command");
         await CheckTotalTicketsAsync(adminConn!, 0,
             "manual demonstration has no ticket before approval");
         await using var demonstration = await StartAsync(appConn!, true, true);
         var approvedRequest = JsonSerializer.Serialize(new {
-            category = approved!.Category.ToString(),
-            priority = approved.Priority.ToString()
+            category = confirmed.Category.ToString(),
+            priority = confirmed.Priority.ToString()
         });
         using var response = await Post(demonstration.Client,
             "/operator/v1/tickets", approvedRequest,
@@ -141,10 +142,11 @@ try
     Check(DemoApprovalPolicy.TryApprove(Guid.Parse(Tenant1), "ALPHA-WATER",
         plan, "APPROVE ALPHA-WATER", out var approved) && approved is not null,
         "synthetic operator confirmation creates exact metadata command");
+    var confirmed = approved ?? throw new InvalidOperationException("No confirmed synthetic command");
     var approvedJson = JsonSerializer.Serialize(new
     {
-        category = approved!.Category.ToString(),
-        priority = approved.Priority.ToString()
+        category = confirmed.Category.ToString(),
+        priority = confirmed.Priority.ToString()
     });
 
     var created = await Post(client, "/operator/v1/tickets",
