@@ -75,6 +75,15 @@ cleanup() {
     code=$?
     trap - EXIT
     if [[ "$pg_started" == "1" ]]; then
+        if [[ "$code" != "0" ]]; then
+            # The short-lived disposable database has synthetic content only.
+            # Docker state and bounded startup logs establish the REAL cause
+            # before the container is removed; do not log secrets or SQL rows.
+            echo "=== PostgreSQL container state ===" >&2
+            docker inspect --format 'Status={{.State.Status}} ExitCode={{.State.ExitCode}} OOM={{.State.OOMKilled}}' "$pg_container" >&2 || true
+            echo "=== PostgreSQL startup log (last 30 lines) ===" >&2
+            docker logs --tail 30 "$pg_container" >&2 || true
+        fi
         docker rm -f "$pg_container" >/dev/null 2>&1 || true
     fi
     rm -rf -- "$work"
@@ -98,7 +107,7 @@ fi
 
 echo "RC-03B SOURCE pinned SHA: $sha"
 echo "RC-03B starting disposable offline PostgreSQL..."
-docker run -d --rm --pull never --name "$pg_container" \
+docker run -d --pull never --name "$pg_container" \
     --network none --cpus 1 --memory 512m --pids-limit 128 \
     --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
     --mount "type=bind,src=$socket_dir,dst=$socket_dir" \
