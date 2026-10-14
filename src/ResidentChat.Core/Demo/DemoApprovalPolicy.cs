@@ -3,11 +3,9 @@ using ResidentChat.Core.Tickets;
 namespace ResidentChat.Core.Demo;
 
 /// <summary>
-/// Local laboratory approval boundary: a proposal alone has no authority.
-/// The caller must additionally be an authenticated operator of the same
-/// tenant and supply a case-specific affirmative confirmation. This class
-/// does not authenticate JWT or perform persistence; the existing protected
-/// operator HTTP API must independently authorize the actual POST.
+/// Laboratory gate. A classifier suggestion alone never authorizes ticket
+/// creation. The real operator API independently authenticates a signed JWT
+/// and derives the tenant from its claims before any database write.
 /// </summary>
 public sealed record ApprovedDemoTicketCommand(
     Guid AuthorizedTenantId,
@@ -25,20 +23,25 @@ public static class DemoApprovalPolicy
     {
         approved = null;
         if (authenticatedOperatorTenantId == Guid.Empty
-            || caseId is null || caseId.Length is < 3 or > 32
-            || !caseId.All(ch => ch is >= 'A' and <= 'Z'
-                or >= '0' and <= '9' or '-')
+            || string.IsNullOrWhiteSpace(caseId)
+            || caseId.Length is < 3 or > 32
+            || !caseId.All(ch => (ch >= 'A' && ch <= 'Z')
+                || (ch >= '0' && ch <= '9') || ch == '-')
             || !string.Equals(explicitConfirmation,
-                "APPROVE " + caseId, StringComparison.Ordinal)
-            || planned is not { Queue: DemoQueueKind.TicketProposal,
-                Proposal: { RequiresHumanApproval: true } proposal }
-            || proposal.AuthorizedTenantId != authenticatedOperatorTenantId
+                "APPROVE " + caseId, StringComparison.Ordinal))
+            return false;
+
+        if (planned?.Queue != DemoQueueKind.TicketProposal
+            || planned.Proposal is not { RequiresHumanApproval: true } proposal)
+            return false;
+
+        if (proposal.AuthorizedTenantId != authenticatedOperatorTenantId
             || !TicketRules.IsCategory(proposal.Category)
             || !TicketRules.IsPriority(proposal.Priority))
             return false;
 
-        // Never pass message text, model output or arbitrary caller fields
-        // to the authenticated API. The operator API accepts exactly two enums.
+        // Only metadata enums cross the approval boundary, no raw messages,
+        // model-generated SQL or additional authorization claims.
         approved = new ApprovedDemoTicketCommand(
             authenticatedOperatorTenantId,
             proposal.Category,
