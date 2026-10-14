@@ -12,6 +12,8 @@
     <ProjectReference Include="../../tools/ResidentChat.LocalLab/ResidentChat.LocalLab.csproj" />
     <!-- Compile the opt-in synthetic operator demo during the ordinary WSL build. -->
     <ProjectReference Include="../../tools/ResidentChat.Demo/ResidentChat.Demo.csproj" />
+    <!-- Compile-only: live synthetic OperatorSmokeTests execute in separate isolated PostgreSQL. -->
+    <ProjectReference Include="../ResidentChat.OperatorSmokeTests/ResidentChat.OperatorSmokeTests.csproj" />
     <!-- Compile-only coverage: PostgreSQL acceptance executable is NOT run by the offline smoke gate. -->
     <ProjectReference Include="../ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj" />
   </ItemGroup>
