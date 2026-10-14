@@ -36,6 +36,9 @@ var fixtures = new (string Name, string Message, ResidentIntent? Intent,
 };
 
 var failures = 0;
+var validCount = 0;
+var labeledMatched = 0;
+var labeledTotal = 0;
 var totalMilliseconds = 0.0;
 
 foreach (var fixture in fixtures)
@@ -49,6 +52,12 @@ foreach (var fixture in fixtures)
         && (fixture.Category is null || fixture.Category == decision.Category)
         && (!fixture.MustReview || decision.RequiresHuman);
     if (!correct) failures++;
+    if (decision.Valid) validCount++;
+    if (fixture.Intent.HasValue)
+    {
+        labeledTotal++;
+        if (correct) labeledMatched++;
+    }
     totalMilliseconds += timer.Elapsed.TotalMilliseconds;
 
     // Print only fixed case identifiers and typed output. Never print prompts.
@@ -63,5 +72,7 @@ foreach (var fixture in fixtures)
 Console.WriteLine(
     $"SYNTHETIC_MODEL_SCORE valid_matches={fixtures.Length - failures}/{fixtures.Length}" +
     $" average_latency_ms={totalMilliseconds / fixtures.Length:F0}" +
-    $" model={model}");
+    $" model={model}" +
+    $" schema_valid={validCount}/{fixtures.Length}" +
+    $" classification_matched={labeledMatched}/{labeledTotal}");
 return failures == 0 ? 0 : 1;
