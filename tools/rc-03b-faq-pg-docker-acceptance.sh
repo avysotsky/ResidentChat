@@ -124,7 +124,7 @@ pg_started=1
 ready=0
 for i in $(seq 1 80); do
     if docker exec "$pg_container" \
-        pg_isready -h "$socket_dir" -U postgres -d postgres >/dev/null 2>&1; then
+        pg_isready -h /var/run/postgresql -U postgres -d postgres >/dev/null 2>&1; then
         ready=1
         break
     fi
@@ -136,10 +136,10 @@ if [[ "$ready" != "1" ]]; then
 fi
 
 docker exec "$pg_container" psql -X -q -v ON_ERROR_STOP=1 \
-    -h "$socket_dir" -U postgres -d postgres \
+    -h /var/run/postgresql -U postgres -d postgres \
     -c "CREATE DATABASE $database" >/dev/null
 docker exec "$pg_container" psql -X -q -v ON_ERROR_STOP=1 \
-    -h "$socket_dir" -U postgres -d "$database" \
+    -h /var/run/postgresql -U postgres -d "$database" \
     -c "CREATE ROLE residentchat_faq_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS" >/dev/null
 
 echo "RC-03B running .NET 10 acceptance with NO Docker network..."
