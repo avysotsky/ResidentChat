@@ -236,8 +236,25 @@ static string? ReadSyntheticMessage(HttpRequestMessage request)
         "Ollama streaming must be disabled");
     Check(transport.RootElement.GetProperty("think").ValueKind == JsonValueKind.False,
         "Qwen thinking must be disabled for bounded classification");
-    Check(transport.RootElement.GetProperty("format").GetString() == "json",
-        "Ollama response format must be structured JSON");
+    var schema = transport.RootElement.GetProperty("format");
+    Check(schema.ValueKind == JsonValueKind.Object
+        && schema.GetProperty("type").GetString() == "object"
+        && schema.GetProperty("additionalProperties").ValueKind == JsonValueKind.False,
+        "Qwen response grammar is a closed JSON object schema");
+    var properties = schema.GetProperty("properties");
+    Check(properties.GetProperty("intent").GetProperty("enum").GetArrayLength() == 6,
+        "Model grammar restricts intent choices");
+    Check(properties.GetProperty("category").GetProperty("type").GetArrayLength() == 2
+        && properties.GetProperty("category").GetProperty("enum").GetArrayLength() == 7,
+        "Model grammar restricts nullable category choices");
+    Check(properties.GetProperty("urgency").GetProperty("enum").GetArrayLength() == 3
+        && properties.GetProperty("requires_human").GetProperty("type").GetString() == "boolean",
+        "Model grammar restricts urgency and review type");
+    Check(schema.GetProperty("required").GetArrayLength() == 4,
+        "Model grammar requires all four fields");
+    Check(transport.RootElement.GetProperty("system").GetString()!
+        .Contains("UNTRUSTED DATA", StringComparison.Ordinal),
+        "Trusted system policy separately identifies message as untrusted");
     Check(transport.RootElement.GetProperty("options").GetProperty("num_ctx").GetInt32() == 2048,
         "local model context bounded for constrained CPU");
     var prompt = transport.RootElement.GetProperty("prompt").GetString()!;
