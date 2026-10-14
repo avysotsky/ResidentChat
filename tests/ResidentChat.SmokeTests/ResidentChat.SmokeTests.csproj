@@ -10,5 +10,7 @@
     <ProjectReference Include="../../src/ResidentChat.Api/ResidentChat.Api.csproj" />
     <ProjectReference Include="../../src/ResidentChat.Core/ResidentChat.Core.csproj" />
     <ProjectReference Include="../../tools/ResidentChat.LocalLab/ResidentChat.LocalLab.csproj" />
+    <!-- Compile-only coverage: PostgreSQL acceptance executable is NOT run by the offline smoke gate. -->
+    <ProjectReference Include="../ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj" />
   </ItemGroup>
 </Project>
