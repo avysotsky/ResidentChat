@@ -112,6 +112,7 @@ docker run -d --pull never --name "$pg_container" \
     --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
     --mount "type=bind,src=$socket_dir,dst=$socket_dir" \
     -e POSTGRES_HOST_AUTH_METHOD=trust \
+    -e "PGHOST=$socket_dir" \
     "$pg_image" -c listen_addresses= \
     -c "unix_socket_directories=$socket_dir" >/dev/null
 pg_started=1
