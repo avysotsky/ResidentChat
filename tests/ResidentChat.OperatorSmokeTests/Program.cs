@@ -199,6 +199,117 @@ try
     Check(tenant2Ticket.StatusCode == HttpStatusCode.Created,
         "second tenant can create independently");
 
+    // RC-06 — browser-backed, loopback-only synthetic operator console.
+    // User actions are represented by explicit HTTP POSTs using signed JWTs.
+    // No model/Telegram integration, real users, or raw chat content.
+    Check((await Get(client, "/operator/console", operator1)).StatusCode
+        == HttpStatusCode.NotFound, "synthetic console disabled by default");
+
+    await using (var consoleServer = await StartAsync(appConn!, true, true, true))
+    {
+        var uiClient = consoleServer.Client;
+        using var html = await Get(uiClient, "/operator/console", operator1);
+        Check(html.StatusCode == HttpStatusCode.OK &&
+            html.Headers.TryGetValues("Content-Security-Policy", out var csp) &&
+            csp.Single().Contains("script-src 'self'", StringComparison.Ordinal) &&
+            (await html.Content.ReadAsStringAsync()).Contains("Панель диспетчера",
+                StringComparison.Ordinal),
+            "opt-in synthetic browser UI has strict same-origin CSP");
+        Check((await Get(uiClient, "/operator/console/app.js", operator1))
+            .StatusCode == HttpStatusCode.OK,
+            "static browser script served from same loopback origin");
+
+        using var missing = await Get(uiClient,
+            "/operator/console/v1/proposals", null);
+        Check(missing.StatusCode == HttpStatusCode.Unauthorized,
+            "JWT required before any proposal details are read");
+        using var invalid = await Get(uiClient,
+            "/operator/console/v1/proposals", outsider);
+        Check(invalid.StatusCode == HttpStatusCode.Forbidden,
+            "unknown JWT tenant cannot read proposal queue");
+
+        using var alphaList = await Get(uiClient,
+            "/operator/console/v1/proposals", operator1);
+        using var betaList = await Get(uiClient,
+            "/operator/console/v1/proposals", operator2);
+        Check(alphaList.StatusCode == HttpStatusCode.OK
+            && betaList.StatusCode == HttpStatusCode.OK,
+            "operator-specific console list is accessible");
+        var alphaJson = await alphaList.Content.ReadAsStringAsync();
+        var betaJson = await betaList.Content.ReadAsStringAsync();
+        Check(alphaJson.Contains("ALPHA-WATER", StringComparison.Ordinal)
+            && !alphaJson.Contains("BETA-ELEVATOR", StringComparison.Ordinal)
+            && betaJson.Contains("BETA-ELEVATOR", StringComparison.Ordinal)
+            && !betaJson.Contains("ALPHA-WATER", StringComparison.Ordinal),
+            "console proposal lists are tenant-isolated");
+
+        await CheckTotalTicketsAsync(adminConn!, 2,
+            "preview cannot create a ticket");
+        using var wrongTenant = await Post(uiClient,
+            "/operator/console/v1/proposals/ALPHA-WATER/approve",
+            """{"confirmation":"APPROVE ALPHA-WATER"}""", operator2);
+        Check(wrongTenant.StatusCode == HttpStatusCode.NotFound,
+            "cross-tenant approve does not disclose a proposal");
+        using var missingConfirmation = await Post(uiClient,
+            "/operator/console/v1/proposals/ALPHA-WATER/approve",
+            """{"confirmation":"APPROVE BETA-ELEVATOR"}""", operator1);
+        Check(missingConfirmation.StatusCode == HttpStatusCode.BadRequest,
+            "wrong-case confirmation cannot persist");
+
+        using var malformed = await Post(uiClient,
+            "/operator/console/v1/proposals/ALPHA-WATER/approve",
+            """{"confirmation":"APPROVE ALPHA-WATER","extra":true}""", operator1);
+        Check(malformed.StatusCode == HttpStatusCode.BadRequest,
+            "unexpected fields cannot influence approval");
+
+        await CheckTotalTicketsAsync(adminConn!, 2,
+            "unauthorized/malformed confirmation makes no database writes");
+        using var approvedResponse = await Post(uiClient,
+            "/operator/console/v1/proposals/ALPHA-WATER/approve",
+            """{"confirmation":"APPROVE ALPHA-WATER"}""", operator1);
+        Check(approvedResponse.StatusCode == HttpStatusCode.OK,
+            "affirmative case-specific signed operator action accepted");
+        await CheckTotalTicketsAsync(adminConn!, 3,
+            "confirmed console action persists exactly one database ticket");
+
+        using var duplicated = await Post(uiClient,
+            "/operator/console/v1/proposals/ALPHA-WATER/approve",
+            """{"confirmation":"APPROVE ALPHA-WATER"}""", operator1);
+        Check(duplicated.StatusCode == HttpStatusCode.Conflict,
+            "duplicate browser action fails closed (no double ticket)");
+        await CheckTotalTicketsAsync(adminConn!, 3,
+            "duplicate browser action cannot create second ticket");
+
+        using var reject = await Post(uiClient,
+            "/operator/console/v1/proposals/BETA-ELEVATOR/reject",
+            """{"confirmation":"REJECT BETA-ELEVATOR"}""", operator2);
+        Check(reject.StatusCode == HttpStatusCode.OK,
+            "operator may reject own synthetic proposal");
+        using var rejectedAgain = await Post(uiClient,
+            "/operator/console/v1/proposals/BETA-ELEVATOR/approve",
+            """{"confirmation":"APPROVE BETA-ELEVATOR"}""", operator2);
+        Check(rejectedAgain.StatusCode == HttpStatusCode.Conflict,
+            "rejected proposal cannot later be approved");
+        await CheckTotalTicketsAsync(adminConn!, 3,
+            "rejected item remains non-persistent");
+
+        using var alphaAfter = await Get(uiClient,
+            "/operator/console/v1/proposals", operator1);
+        using var approvedJson = JsonDocument.Parse(
+            await alphaAfter.Content.ReadAsStringAsync());
+        var alphaItem = approvedJson.RootElement[0];
+        Check(alphaItem.GetProperty("state").GetString() == "Approved"
+            && alphaItem.GetProperty("ticketId").ValueKind == JsonValueKind.String,
+            "operator can see persisted ticket reference and state");
+        var consoleTicketId = alphaItem.GetProperty("ticketId").GetGuid();
+        Check((await Get(uiClient, "/operator/v1/tickets/" + consoleTicketId,
+            operator1)).StatusCode == HttpStatusCode.OK,
+            "console-approved ticket status accessible through existing JWT operator API");
+        Check((await Get(uiClient, "/operator/v1/tickets/" + consoleTicketId,
+            operator2)).StatusCode == HttpStatusCode.NotFound,
+            "console-approved ticket inaccessible to other tenant");
+    }
+
     await VerifyRlsAsync(appConn!, Guid.Parse(Tenant1), Guid.Parse(Tenant2));
     Console.WriteLine("RC-02 PASS: JWT authorization, two-tenant HTTP isolation, PostgreSQL RLS and audit.");
     return 0;
@@ -279,10 +390,11 @@ static async Task<HttpResponseMessage> Post(HttpClient client,
     return await client.SendAsync(req);
 }
 
-static async Task<HttpResponseMessage> Get(HttpClient client, string path, string jwt)
+static async Task<HttpResponseMessage> Get(HttpClient client, string path, string? jwt)
 {
     using var req = new HttpRequestMessage(HttpMethod.Get, path);
-    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+    if (jwt is not null)
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
     return await client.SendAsync(req);
 }
 
@@ -308,7 +420,7 @@ static void Check(bool value, string label)
 }
 
 static async Task<SyntheticServer> StartAsync(
-    string connection, bool enabled, bool configured)
+    string connection, bool enabled, bool configured, bool consoleEnabled = false)
 {
     var overrides = new Dictionary<string, string?>
     {
@@ -319,7 +431,9 @@ static async Task<SyntheticServer> StartAsync(
         ["ResidentChat:Operator:AuditHmacKey"] = AuditKey,
         ["ResidentChat:Operator:ConnectionString"] = connection,
         ["ResidentChat:Operator:AllowedTenantIds:0"] = Tenant1,
-        ["ResidentChat:Operator:AllowedTenantIds:1"] = Tenant2
+        ["ResidentChat:Operator:AllowedTenantIds:1"] = Tenant2,
+        ["ResidentChat:OperatorConsole:Enabled"] = consoleEnabled.ToString(),
+        ["ResidentChat:OperatorConsole:Mode"] = consoleEnabled ? "synthetic-lab-only" : ""
     };
     var app = ResidentChatApp.Build([], overrides);
     app.Urls.Add("http://127.0.0.1:0");
