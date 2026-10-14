@@ -109,6 +109,37 @@ public sealed class LocalModelClassifier : IDisposable
           + "Never output personal data, phone numbers, links, actions or message echoes.";
 
         var prompt = "\nUNTRUSTED_MESSAGE_JSON:\n" + JsonSerializer.Serialize(new { message });
+        // Ollama accepts a JSON Schema object in 'format'. Constrain decoding at
+        // generation time, then validate again with ParseDecision (fail closed).
+        var schema = new
+        {
+            type = "object",
+            properties = new
+            {
+                intent = new
+                {
+                    type = "string",
+                    @enum = new[] { "faq", "maintenance", "spam", "conflict", "emergency", "other" }
+                },
+                category = new
+                {
+                    type = new[] { "string", "null" },
+                    @enum = new string?[]
+                    {
+                        null, "heating", "water", "electricity", "elevator", "common_area", "other"
+                    }
+                },
+                urgency = new
+                {
+                    type = "string",
+                    @enum = new[] { "routine", "urgent", "emergency" }
+                },
+                requires_human = new { type = "boolean" }
+            },
+            required = new[] { "intent", "category", "urgency", "requires_human" },
+            additionalProperties = false
+        };
+
         var payload = JsonSerializer.Serialize(new
         {
             model = _model,
@@ -116,7 +147,7 @@ public sealed class LocalModelClassifier : IDisposable
             prompt,
             stream = false,
             think = false,
-            format = "json",
+            format = schema,
             options = new { temperature = 0, num_predict = 160, num_ctx = 2048 }
         });
 
