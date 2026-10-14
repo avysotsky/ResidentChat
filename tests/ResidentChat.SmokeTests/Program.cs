@@ -98,6 +98,7 @@ try
 
     RunApprovedFaqPolicyLab();
     RunSyntheticDemoPolicyLab();
+    RunSyntheticApprovalPolicyLab();
     await RunLocalModelSecurityLabAsync();
     Console.WriteLine("RC-01 PASS: synthetic policy + loopback HTTP admission/security checks.");
     return 0;
@@ -107,6 +108,46 @@ catch (Exception ex)
     // Never print HTTP payloads or secrets. Test errors use fixed synthetic check labels.
     Console.Error.WriteLine("RC-01 FAIL: " + ex.GetType().Name);
     return 1;
+}
+
+static void RunSyntheticApprovalPolicyLab()
+{
+    var alpha = Guid.Parse("a1100000-0000-4000-8000-000000000001");
+    var beta = Guid.Parse("b2200000-0000-4000-8000-000000000002");
+    var water = DemoDispatchPolicy.Plan(alpha, new ResidentDecision(
+        true, ResidentIntent.Maintenance, "water", ResidentUrgency.Urgent, true));
+
+    Check(!DemoApprovalPolicy.TryApprove(alpha, "ALPHA-WATER",
+        water, null, out _), "ticket proposal cannot persist without confirmation");
+    Check(!DemoApprovalPolicy.TryApprove(alpha, "ALPHA-WATER",
+        water, "approve ALPHA-WATER", out _), "confirmation must be exact and case-specific");
+    Check(!DemoApprovalPolicy.TryApprove(alpha, "ALPHA-WATER",
+        water, "APPROVE BETA-WATER", out _), "approval for different case does not apply");
+    Check(!DemoApprovalPolicy.TryApprove(beta, "ALPHA-WATER",
+        water, "APPROVE ALPHA-WATER", out _), "cross-tenant approval refused");
+    Check(!DemoApprovalPolicy.TryApprove(Guid.Empty, "ALPHA-WATER",
+        water, "APPROVE ALPHA-WATER", out _), "unknown operator scope fails closed");
+
+    Check(DemoApprovalPolicy.TryApprove(alpha, "ALPHA-WATER",
+        water, "APPROVE ALPHA-WATER", out var approved)
+        && approved is { AuthorizedTenantId: var tenant,
+            Category: TicketCategory.Water, Priority: TicketPriority.Urgent }
+        && tenant == alpha, "only explicit matching approval produces a write command");
+
+    Check(!DemoApprovalPolicy.TryApprove(alpha, "ALPHA-WATER",
+        DemoDispatchPolicy.Plan(alpha, ResidentDecision.ReviewRequired),
+        "APPROVE ALPHA-WATER", out _), "unknown model classification cannot be approved");
+    Check(!DemoApprovalPolicy.TryApprove(alpha, "ALPHA-FIRE",
+        DemoDispatchPolicy.Plan(alpha, new ResidentDecision(
+            true, ResidentIntent.Emergency, null, ResidentUrgency.Emergency, true)),
+        "APPROVE ALPHA-FIRE", out _), "emergency review cannot bypass manual response procedure");
+    Check(!DemoApprovalPolicy.TryApprove(alpha, "ALPHA-FAQ",
+        DemoDispatchPolicy.Plan(alpha, new ResidentDecision(
+            true, ResidentIntent.Faq, null, ResidentUrgency.Routine, false)),
+        "APPROVE ALPHA-FAQ", out _), "FAQ cannot be mistaken for ticket proposal");
+    Check(!DemoApprovalPolicy.TryApprove(alpha, "ALPHA-WATER;",
+        water, "APPROVE ALPHA-WATER;", out _),
+        "malformed case id cannot bypass approval");
 }
 
 static void RunSyntheticDemoPolicyLab()
