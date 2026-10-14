@@ -94,8 +94,9 @@ public sealed class LocalModelClassifier : IDisposable
             model = _model,
             prompt,
             stream = false,
+            think = false,
             format = "json",
-            options = new { temperature = 0, num_predict = 128 }
+            options = new { temperature = 0, num_predict = 160, num_ctx = 2048 }
         });
 
         using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint)

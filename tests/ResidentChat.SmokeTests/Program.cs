@@ -232,6 +232,14 @@ static string? ReadSyntheticMessage(HttpRequestMessage request)
 {
     var raw = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
     using var transport = JsonDocument.Parse(raw);
+    Check(transport.RootElement.GetProperty("stream").ValueKind == JsonValueKind.False,
+        "Ollama streaming must be disabled");
+    Check(transport.RootElement.GetProperty("think").ValueKind == JsonValueKind.False,
+        "Qwen thinking must be disabled for bounded classification");
+    Check(transport.RootElement.GetProperty("format").GetString() == "json",
+        "Ollama response format must be structured JSON");
+    Check(transport.RootElement.GetProperty("options").GetProperty("num_ctx").GetInt32() == 2048,
+        "local model context bounded for constrained CPU");
     var prompt = transport.RootElement.GetProperty("prompt").GetString()!;
     const string marker = "\nUNTRUSTED_MESSAGE_JSON:\n";
     var index = prompt.IndexOf(marker, StringComparison.Ordinal);
