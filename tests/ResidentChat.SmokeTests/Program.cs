@@ -9,6 +9,8 @@ using ResidentChat.Api;
 using ResidentChat.Core.Ingress;
 using ResidentChat.Core.LocalAi;
 using ResidentChat.Core.Knowledge;
+using ResidentChat.Core.Demo;
+using ResidentChat.Core.Tickets;
 
 const string Secret = "SyntheticOnlyWebhookSecret_0123456789ABCDEF";
 const long AllowedChat = -1001234567890;
@@ -95,6 +97,7 @@ try
     }
 
     RunApprovedFaqPolicyLab();
+    RunSyntheticDemoPolicyLab();
     await RunLocalModelSecurityLabAsync();
     Console.WriteLine("RC-01 PASS: synthetic policy + loopback HTTP admission/security checks.");
     return 0;
@@ -104,6 +107,65 @@ catch (Exception ex)
     // Never print HTTP payloads or secrets. Test errors use fixed synthetic check labels.
     Console.Error.WriteLine("RC-01 FAIL: " + ex.GetType().Name);
     return 1;
+}
+
+static void RunSyntheticDemoPolicyLab()
+{
+    // This gate does NOT execute a model or persist any ticket.
+    // It proves a model recommendation alone cannot authorize an action.
+    var tenantA = Guid.Parse("a1100000-0000-4000-8000-000000000001");
+    var tenantB = Guid.Parse("b2200000-0000-4000-8000-000000000002");
+    var water = new ResidentDecision(true, ResidentIntent.Maintenance,
+        "water", ResidentUrgency.Urgent, true);
+    var accepted = DemoDispatchPolicy.Plan(tenantA, water);
+    Check(accepted.Queue == DemoQueueKind.TicketProposal
+        && accepted.Proposal is { AuthorizedTenantId: var actualTenant,
+            Category: TicketCategory.Water, Priority: TicketPriority.Urgent,
+            SuggestedInitialStatus: TicketStatus.Escalated, RequiresHumanApproval: true }
+        && actualTenant == tenantA,
+        "valid urgent maintenance creates a metadata-only human-approval proposal");
+
+    Check(DemoDispatchPolicy.Plan(Guid.Empty, water).Proposal is null,
+        "missing trusted tenant cannot produce a proposal");
+    Check(DemoDispatchPolicy.Plan(tenantB, water).Proposal?.AuthorizedTenantId == tenantB,
+        "tenant comes from trusted context, not model output");
+
+    var ordinary = water with
+    {
+        Category = "elevator", Urgency = ResidentUrgency.Routine, RequiresHuman = false
+    };
+    Check(DemoDispatchPolicy.Plan(tenantA, ordinary).Proposal is
+        { Category: TicketCategory.Elevator, Priority: TicketPriority.Routine,
+          SuggestedInitialStatus: TicketStatus.Open, RequiresHumanApproval: true },
+        "routine elevator recommendation is still an uncommitted proposal");
+
+    Check(DemoDispatchPolicy.Plan(tenantA, ordinary with { Category = "forged" })
+        .Proposal is null,
+        "unknown model category cannot enter ticket queue");
+    Check(DemoDispatchPolicy.Plan(tenantA, ordinary with { Valid = false })
+        .Proposal is null,
+        "invalid model decision never proposes ticket");
+
+    Check(DemoDispatchPolicy.Plan(tenantA, ordinary with
+        { Intent = ResidentIntent.Emergency, Urgency = ResidentUrgency.Emergency })
+        is { Queue: DemoQueueKind.OperatorReview, Proposal: null },
+        "emergency bypasses ticket automation and requires manual review");
+    Check(DemoDispatchPolicy.Plan(tenantA, ordinary with { Urgency = ResidentUrgency.Emergency })
+        .Proposal is null,
+        "emergency urgency cannot be downgraded into a routine ticket");
+    Check(DemoDispatchPolicy.Plan(tenantA, ordinary with { Intent = ResidentIntent.Conflict })
+        .Proposal is null,
+        "disputed case stays human-only");
+
+    Check(DemoDispatchPolicy.Plan(tenantA, ordinary with { Intent = ResidentIntent.Faq })
+        is { Queue: DemoQueueKind.ApprovedFaqRequired, Proposal: null },
+        "FAQ never gets a fabricated answer or ticket");
+    Check(DemoDispatchPolicy.Plan(tenantA, ordinary with { Intent = ResidentIntent.Spam })
+        is { Queue: DemoQueueKind.ModerationReview, Proposal: null },
+        "spam recommendation cannot ban or delete anyone");
+    Check(DemoDispatchPolicy.Plan(tenantA, ResidentDecision.ReviewRequired)
+        is { Queue: DemoQueueKind.OperatorReview, Proposal: null },
+        "unavailable model fails closed to manual review");
 }
 
 static string GroupMessage(long updateId, long chatId, string text = "synthetic-resident-message") =>
