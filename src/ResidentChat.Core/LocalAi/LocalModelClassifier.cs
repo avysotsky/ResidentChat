@@ -64,6 +64,57 @@ public sealed class LocalModelClassifier : IDisposable
         return false;
     }
 
+    // Very limited, high-confidence triage hints. These are not a substitute
+    // for emergency dispatch or for human review, and cannot recognize every
+    // paraphrase, negation, quotation or language. False positives are possible.
+    // Unlike the model decision, these hints can only RAISE review/urgency.
+    private static readonly string[] ImmediateDangerMarkers =
+    [
+        "пожар в доме", "пожар в подъезде", "горит подъезд",
+        "пожежа у будинку", "пожежа в будинку", "горить під'їзд",
+        "утечка газа", "пахнет газом", "запах газу", "витік газу",
+        "застряли в лифте", "люди застряли", "застрягли у ліфті",
+        "люди застрягли", "gas leak", "trapped in elevator",
+        "fire in the building"
+    ];
+
+    private static readonly string[] ThreatMarkers =
+    [
+        "угрожает убить", "угрожает расправой",
+        "погрожує вбити", "погрожує розправою",
+        "threatened to kill"
+    ];
+
+    private static bool ContainsAny(string message, string[] markers)
+    {
+        foreach (var marker in markers)
+        {
+            if (message.Contains(marker, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    private static ResidentDecision ApplyIndependentSafetyFloor(
+        string message, ResidentDecision decision)
+    {
+        if (!decision.Valid)
+            return decision;
+
+        var danger = ContainsAny(message, ImmediateDangerMarkers);
+        var threat = ContainsAny(message, ThreatMarkers);
+        var injection = HasSuspiciousInstruction(message);
+        if (!danger && !threat && !injection)
+            return decision;
+
+        // Keep model-provided intent/category for manual review: keyword
+        // spotting is insufficient evidence to rewrite their semantics.
+        var urgency = danger ? ResidentUrgency.Emergency
+            : threat && decision.Urgency == ResidentUrgency.Routine
+                ? ResidentUrgency.Urgent : decision.Urgency;
+        return decision with { Urgency = urgency, RequiresHuman = true };
+    }
+
     private readonly Uri _endpoint;
     private readonly string _model;
     private readonly HttpClient _client;
@@ -229,11 +280,9 @@ public sealed class LocalModelClassifier : IDisposable
             var decision = ParseDecision(text);
             if (!decision.Valid)
                 return decision;
-            // Input-side safety floor: a model must never be able to remove
-            // human review from an obvious instruction-hijacking attempt.
-            return HasSuspiciousInstruction(message)
-                ? decision with { RequiresHuman = true }
-                : decision;
+            // Model instructions and typed output cannot lower clearly
+            // indicated safety escalation, even when Qwen returns routine/other.
+            return ApplyIndependentSafetyFloor(message, decision);
         }
         catch (HttpRequestException)
         {
