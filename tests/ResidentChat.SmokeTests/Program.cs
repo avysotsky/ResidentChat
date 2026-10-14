@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using ResidentChat.Api;
 using ResidentChat.Core.Ingress;
 using ResidentChat.Core.LocalAi;
+using ResidentChat.Core.Knowledge;
 
 const string Secret = "SyntheticOnlyWebhookSecret_0123456789ABCDEF";
 const long AllowedChat = -1001234567890;
@@ -93,6 +94,7 @@ try
             "response cannot echo chat content");
     }
 
+    RunApprovedFaqPolicyLab();
     await RunLocalModelSecurityLabAsync();
     Console.WriteLine("RC-01 PASS: synthetic policy + loopback HTTP admission/security checks.");
     return 0;
@@ -149,6 +151,67 @@ static async Task<LocalTestServer> StartAsync(bool enabled, bool configured)
     return new LocalTestServer(app, new HttpClient { BaseAddress = new Uri(url) });
 }
 
+
+static void RunApprovedFaqPolicyLab()
+{
+    // Synthetic-only tenant data. This checks C# policy, NOT PostgreSQL RLS
+    // or full-text ranking; those need an independent database qualification.
+    var tenantA = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    var tenantB = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    var faqId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+
+    Check(!ApprovedFaqPolicy.TryCreate(Guid.Empty, "графік диспетчера", 2, out _),
+        "FAQ search requires trusted tenant scope");
+    Check(!ApprovedFaqPolicy.TryCreate(tenantA, null, 2, out _),
+        "FAQ search rejects missing query");
+    Check(!ApprovedFaqPolicy.TryCreate(tenantA, "а", 2, out _),
+        "FAQ search rejects too-short query");
+    Check(!ApprovedFaqPolicy.TryCreate(tenantA,
+        new string('x', ApprovedFaqPolicy.MaxQueryChars + 1), 2, out _),
+        "FAQ search query length bounded");
+    Check(!ApprovedFaqPolicy.TryCreate(tenantA, "график\nдиспетчера", 2, out _),
+        "FAQ search rejects control characters");
+    Check(!ApprovedFaqPolicy.TryCreate(tenantA, "графік", 4, out _),
+        "FAQ search caps caller-controlled result count");
+    Check(ApprovedFaqPolicy.TryCreate(tenantA,
+        "  графік диспетчера  ", 2, out var query)
+        && query is not null && query.Text == "графік диспетчера",
+        "FAQ search normalizes outer whitespace without changing Unicode");
+
+    if (query is null)
+        throw new InvalidOperationException("Synthetic FAQ query was not created");
+
+    var valid = new ApprovedFaqHit(
+        tenantA, faqId, "Коли працює диспетчер?",
+        "Тестовий диспетчер працює за вигаданим розкладом.",
+        "synthetic://approved-faq-001",
+        new DateTimeOffset(2026, 10, 14, 0, 0, 0, TimeSpan.Zero));
+
+    Check(ApprovedFaqPolicy.ValidateResults(query, [valid]).Count == 1,
+        "single approved FAQ result accepted");
+    Check(ApprovedFaqPolicy.ValidateResults(query, []).Count == 0,
+        "no FAQ match returns empty result without model fabrication");
+    Check(ApprovedFaqPolicy.ValidateResults(query,
+        [valid, valid with { TenantId = tenantB }]).Count == 0,
+        "cross-tenant FAQ contamination fails entire result batch");
+    Check(ApprovedFaqPolicy.ValidateResults(query,
+        [valid with { ApprovedAt = default }]).Count == 0,
+        "unapproved FAQ result refused");
+    Check(ApprovedFaqPolicy.ValidateResults(query,
+        [valid with { FaqId = Guid.Empty }]).Count == 0,
+        "malformed FAQ identifier refused");
+    Check(ApprovedFaqPolicy.ValidateResults(query,
+        [valid with { Answer = new string('x', ApprovedFaqPolicy.MaxAnswerChars + 1) }])
+        .Count == 0,
+        "oversized answer rejected before it can reach inference");
+    Check(ApprovedFaqPolicy.ValidateResults(query, [valid, valid, valid]).Count == 0,
+        "SQL or repository cannot exceed the requested bounded result count");
+
+    Check(ApprovedFaqPolicy.TryCreate(tenantB, "графік диспетчера", 2,
+        out var secondQuery) && secondQuery is not null
+        && ApprovedFaqPolicy.ValidateResults(secondQuery, [valid]).Count == 0,
+        "same question never returns another tenant's approved answer");
+}
 
 static async Task RunLocalModelSecurityLabAsync()
 {
