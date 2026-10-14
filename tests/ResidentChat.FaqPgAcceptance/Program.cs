@@ -26,11 +26,16 @@ try
 
     var admin = new NpgsqlConnectionStringBuilder(adminString);
     var runtime = new NpgsqlConnectionStringBuilder(runtimeString);
-    Ensure(admin.Database.StartsWith(DbPrefix, StringComparison.Ordinal)
+    // Refuse all production/cloud databases, even when env vars are present.
+    // The harness guarantees a short ephemeral Unix-socket directory in /tmp.
+    Ensure((admin.Database ?? "").StartsWith(DbPrefix, StringComparison.Ordinal)
         && admin.Database == runtime.Database
+        && (admin.Host ?? "").StartsWith("/tmp/rc03bpg.", StringComparison.Ordinal)
+        && admin.Host == runtime.Host
+        && admin.Port == runtime.Port
         && runtime.Username == RuntimeRole
         && admin.Username != RuntimeRole,
-        "dedicated acceptance database and distinct runtime role required");
+        "dedicated local socket, acceptance database and distinct runtime role required");
 
     // Install schema/seed with migration owner, NEVER runtime credentials.
     await using (var privileged = new NpgsqlConnection(admin.ConnectionString))
