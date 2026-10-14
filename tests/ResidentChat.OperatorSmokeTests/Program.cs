@@ -295,9 +295,9 @@ try
 
         using var alphaAfter = await Get(uiClient,
             "/operator/console/v1/proposals", operator1);
-        using var approvedJson = JsonDocument.Parse(
+        using var consoleViewJson = JsonDocument.Parse(
             await alphaAfter.Content.ReadAsStringAsync());
-        var alphaItem = approvedJson.RootElement[0];
+        var alphaItem = consoleViewJson.RootElement[0];
         Check(alphaItem.GetProperty("state").GetString() == "Approved"
             && alphaItem.GetProperty("ticketId").ValueKind == JsonValueKind.String,
             "operator can see persisted ticket reference and state");
