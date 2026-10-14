@@ -39,8 +39,15 @@ if ! git --git-dir="$mirror" cat-file -e "$sha"; then
     echo "RC-03B NOT_RUN: exact SHA not present in local runner Git cache"
     exit 2
 fi
-if [[ ! -d "$cache/packages" ]]; then
-    echo "RC-03B NOT_RUN: offline NuGet package cache missing"
+# The established WSL2 runner's NuGet bind may store expanded package
+# directories directly under nuget/, not under an extra nuget/packages/.
+# Detect both layouts; keep the shared cache strictly read-only.
+if [[ -d "$cache/packages/npgsql" ]]; then
+    nuget_mount="/nuget/packages"
+elif [[ -d "$cache/npgsql" ]]; then
+    nuget_mount="/nuget"
+else
+    echo "RC-03B NOT_RUN: Npgsql package not present in shared offline NuGet cache"
     exit 2
 fi
 docker image inspect "$sdk_image" >/dev/null || {
@@ -131,7 +138,7 @@ timeout 300 docker run --rm --pull never \
     --mount "type=bind,src=$source_dir,dst=/work" \
     --mount "type=bind,src=$socket_dir,dst=$socket_dir" \
     --mount "type=bind,src=$cache,dst=/nuget,readonly" \
-    -e NUGET_PACKAGES=/nuget/packages \
+    -e "NUGET_PACKAGES=$nuget_mount" \
     -e DOTNET_CLI_HOME=/tmp/dotnet-home \
     -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
@@ -140,7 +147,7 @@ timeout 300 docker run --rm --pull never \
     -e "RC03B_TEST_PG_RUNTIME=Host=$socket_dir;Database=$database;Username=residentchat_faq_reader;Pooling=true;Timeout=5;Command Timeout=20" \
     "$sdk_image" /bin/bash -c \
     'set -Eeuo pipefail
-     dotnet restore tests/ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj --source /nuget/packages --ignore-failed-sources --verbosity quiet
+     dotnet restore tests/ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj --source "$NUGET_PACKAGES" --ignore-failed-sources --verbosity quiet
      dotnet run --project tests/ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj -c Release --no-restore --no-launch-profile'
 
 echo "RC-03B POSTGRESQL ACCEPTANCE PASS (manual, not yet a watcher report)"
