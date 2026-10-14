@@ -6,6 +6,19 @@ set -Eeuo pipefail
 umask 077
 
 sha="$1"
+# No flag => automated regression that SIMULATES a human confirmation.
+# Explicit flags => one manually authorized synthetic approval and one POST.
+if [[ "$#" == 1 ]]; then
+    approval_case=""
+    approval_confirmation=""
+elif [[ "$#" == 5 && "$2" == "--approve" && "$3" == "ALPHA-WATER"
+        && "$4" == "--confirm" && "$5" == "APPROVE ALPHA-WATER" ]]; then
+    approval_case="$3"
+    approval_confirmation="$5"
+else
+    echo "RC-05 NOT_RUN: use SHA [--approve ALPHA-WATER --confirm 'APPROVE ALPHA-WATER']"
+    exit 2
+fi
 if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]] || [[ "$(id -u)" == 0 ]]; then
     echo "RC-05 NOT_RUN: use exact SHA as unprivileged WSL user"
     exit 2
@@ -118,11 +131,22 @@ timeout 300 docker run --rm --pull never \
     -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
     -e DOTNET_NOLOGO=1 \
     -e RC05_TEST_ISOLATED=1 \
+    -e "RC05_APPROVE_CASE=$approval_case" \
+    -e "RC05_APPROVE_CONFIRMATION=$approval_confirmation" \
     -e "RC02_TEST_PG_ADMIN=Host=$socket;Database=$database;Username=postgres;Pooling=false;Timeout=5;Command Timeout=20" \
     -e "RC02_TEST_PG_RUNTIME=Host=$socket;Database=$database;Username=residentchat_synthetic_app;Pooling=true;Timeout=5;Command Timeout=20" \
     "$sdk_image" /bin/bash -c \
     'set -Eeuo pipefail
      dotnet restore tests/ResidentChat.OperatorSmokeTests/ResidentChat.OperatorSmokeTests.csproj --source "$NUGET_PACKAGES" --ignore-failed-sources --verbosity quiet
-     dotnet run -c Release --no-restore --no-launch-profile --project tests/ResidentChat.OperatorSmokeTests/ResidentChat.OperatorSmokeTests.csproj'
+     if [[ -n "$RC05_APPROVE_CASE" ]]; then
+         dotnet run -c Release --no-restore --no-launch-profile --project tests/ResidentChat.OperatorSmokeTests/ResidentChat.OperatorSmokeTests.csproj -- \
+             --approve "$RC05_APPROVE_CASE" --confirm "$RC05_APPROVE_CONFIRMATION"
+     else
+         dotnet run -c Release --no-restore --no-launch-profile --project tests/ResidentChat.OperatorSmokeTests/ResidentChat.OperatorSmokeTests.csproj
+     fi'
 
-echo "RC-05 REAL POSTGRESQL OPERATOR APPROVAL ACCEPTANCE PASS (synthetic only)"
+if [[ -n "$approval_case" ]]; then
+    echo "RC-05 OPERATOR-TRIGGERED SYNTHETIC DATABASE DEMO PASS"
+else
+    echo "RC-05 REAL POSTGRESQL OPERATOR APPROVAL ACCEPTANCE PASS (scripted synthetic operator)"
+fi
