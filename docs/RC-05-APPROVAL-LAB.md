@@ -33,6 +33,32 @@ Any missing, tampered, wrong-case, malformed, emergency, unknown, or cross-tenan
 
 Smoke tests compile the OperatorSmokeTests project and exercise the approval policy with synthetic fixtures **without** connecting to PostgreSQL. The separate acceptance script actually executes HTTP, JWT and PostgreSQL.
 
+## Owner-visible explicit approval (one real synthetic ticket)
+
+After the default no-flag **automated acceptance** PASS, run the **same**
+disposable WSL launcher at a pinned Git SHA with:
+
+```bash
+bash tools/rc-05-approved-ticket-pg-acceptance.sh <FULL_SHA> \
+  --approve ALPHA-WATER --confirm "APPROVE ALPHA-WATER"
+```
+
+The owner must explicitly enter these exact command arguments. This variant
+runs the **existing authenticated HTTP operator API**, creates **exactly one**
+synthetic Water/Urgent/Escalated ticket *after* case-specific approval, reads it
+back as the signed synthetic operator and checks PostgreSQL has one row. The
+test cluster is destroyed at process exit, so no ticket remains afterward.
+
+Output: `RC-05 OPERATOR PREVIEW`, `RC-05 MANUAL LAB PASS`,
+`RC-05 OPERATOR-TRIGGERED SYNTHETIC DATABASE DEMO PASS`,
+`RC-05 CLEANUP PASS`.
+
+This is an explicit owner-initiated command but authentication **within the
+disposable lab** still uses locally minted **synthetic** JWT credentials; it
+is not a deployed account system or GUI. The default no-flag acceptance only
+**simulates** human confirmation using a test fixture. Keep these outcomes
+distinct in reports.
+
 ## What is still NOT done
 
 - There is **no real operator-facing approval screen** or logged-in operator interaction in the Telegram application.
