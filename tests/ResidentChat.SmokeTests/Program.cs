@@ -46,6 +46,16 @@ try
     {
         var response = await PostAsync(disabled.Client, GroupMessage(100, AllowedChat), Secret);
         Check(response.Status == HttpStatusCode.NotFound, "webhook disabled by default");
+        using var console = await disabled.Client.GetAsync("/operator/console");
+        Check(console.StatusCode == HttpStatusCode.NotFound,
+            "operator console disabled without explicit configuration");
+    }
+
+    await using (var consoleWithoutOperator = await StartAsync(false, false, true))
+    {
+        using var response = await consoleWithoutOperator.Client.GetAsync("/operator/console");
+        Check(response.StatusCode == HttpStatusCode.NotFound,
+            "explicit console switch cannot bypass absent operator JWT configuration");
     }
 
     await using (var invalid = await StartAsync(true, false))
@@ -236,13 +246,15 @@ static async Task<(HttpStatusCode Status, string Body)> PostAsync(
     return (response.StatusCode, await response.Content.ReadAsStringAsync());
 }
 
-static async Task<LocalTestServer> StartAsync(bool enabled, bool configured)
+static async Task<LocalTestServer> StartAsync(bool enabled, bool configured, bool consoleEnabled = false)
 {
     var cfg = new Dictionary<string, string?>
     {
         ["ResidentChat:Telegram:Enabled"] = enabled ? "true" : "false",
         ["ResidentChat:Telegram:WebhookSecret"] = configured ? Secret : "",
-        ["ResidentChat:Telegram:AllowedChatIds:0"] = AllowedChat.ToString()
+        ["ResidentChat:Telegram:AllowedChatIds:0"] = AllowedChat.ToString(),
+        ["ResidentChat:OperatorConsole:Enabled"] = consoleEnabled.ToString(),
+        ["ResidentChat:OperatorConsole:Mode"] = consoleEnabled ? "synthetic-lab-only" : ""
     };
     var app = ResidentChatApp.Build([], cfg);
     app.Urls.Add("http://127.0.0.1:0");
