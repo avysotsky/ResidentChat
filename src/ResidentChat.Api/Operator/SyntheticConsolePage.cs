@@ -145,9 +145,13 @@ public static class SyntheticConsolePage
             try {
               await api("/operator/console/v1/proposals/" + encodeURIComponent(item.caseId)
                 + "/" + (approve ? "approve" : "reject"), "POST", verb + item.caseId);
+              // Release the action guard BEFORE refresh() renders its buttons.
+              // Otherwise makeButton() permanently marks "Проверить статус"
+              // disabled, even after the request has completed.
+              busy = false;
+              await refresh();
               setStatus(approve ? "Тестовая заявка создана по подтверждению оператора."
                 : "Предложение отклонено. Запись в базу не создавалась.");
-              await refresh();
             } catch (error) {
               setStatus("Действие не выполнено. " + error.message
                 + ". Если запись могла быть создана, не повторяйте подтверждение до проверки.");
