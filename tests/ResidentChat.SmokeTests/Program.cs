@@ -107,7 +107,14 @@ try
             "response cannot echo chat content");
     }
 
-    Check(SyntheticConsolePage.JavaScript.Contains("busy = false;\n              await refresh();", StringComparison.Ordinal),
+    var browserScript = SyntheticConsolePage.JavaScript;
+    var actionStart = browserScript.IndexOf("async function doAction(", StringComparison.Ordinal);
+    var actionEnd = browserScript.IndexOf("async function showTicket(", StringComparison.Ordinal);
+    Check(actionStart >= 0 && actionEnd > actionStart, "operator action handler present");
+    var action = browserScript[actionStart..actionEnd];
+    var release = action.IndexOf("busy = false;", StringComparison.Ordinal);
+    var render = action.IndexOf("await refresh();", StringComparison.Ordinal);
+    Check(release >= 0 && render > release,
         "status control unlocked before rendering refreshed proposals");
     RunApprovedFaqPolicyLab();
     RunSyntheticDemoPolicyLab();
