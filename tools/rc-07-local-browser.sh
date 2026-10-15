@@ -232,18 +232,49 @@ if [[ "$ready" != 1 ]]; then
 fi
 
 url="http://127.0.0.1:$port"
-if ! curl --noproxy '*' -fsS -m 5 \
+alpha_queue="$(curl --noproxy '*' -fsS -m 5 \
     -H "Authorization: Bearer $alpha_token" \
-    "$url/operator/console/v1/proposals" | grep -q 'ALPHA-WATER'; then
-    echo 'RC-07 FAIL: alpha JWT / tenant queue validation' >&2
+    "$url/operator/console/v1/proposals")" || {
+    echo 'RC-07 FAIL: alpha JWT rejected' >&2
     exit 1
-fi
-if ! curl --noproxy '*' -fsS -m 5 \
+}
+beta_queue="$(curl --noproxy '*' -fsS -m 5 \
     -H "Authorization: Bearer $beta_token" \
-    "$url/operator/console/v1/proposals" | grep -q 'BETA-ELEVATOR'; then
-    echo 'RC-07 FAIL: beta JWT / tenant queue validation' >&2
+    "$url/operator/console/v1/proposals")" || {
+    echo 'RC-07 FAIL: beta JWT rejected' >&2
     exit 1
-fi
+}
+[[ "$alpha_queue" == *ALPHA-WATER* && "$alpha_queue" != *BETA-ELEVATOR* \
+    && "$beta_queue" == *BETA-ELEVATOR* && "$beta_queue" != *ALPHA-WATER* ]] || {
+    echo 'RC-07 FAIL: cross-tenant proposal visibility' >&2
+    exit 1
+}
+unset alpha_queue beta_queue
+
+# Browser must have a bearer JWT; anonymous and mismatched tenants fail.
+anonymous_code="$(curl --noproxy '*' -sS -m 5 -o /dev/null \
+    -w '%{http_code}' "$url/operator/console/v1/proposals")"
+[[ "$anonymous_code" == 401 ]] || {
+    echo 'RC-07 FAIL: anonymous proposal read was not blocked' >&2
+    exit 1
+}
+foreign_code="$(curl --noproxy '*' -sS -m 5 -o /dev/null \
+    -w '%{http_code}' -H "Authorization: Bearer $beta_token" \
+    -H 'Content-Type: application/json' \
+    --data '{"confirmation":"APPROVE ALPHA-WATER"}' \
+    "$url/operator/console/v1/proposals/ALPHA-WATER/approve")"
+[[ "$foreign_code" == 404 ]] || {
+    echo 'RC-07 FAIL: foreign tenant could access ALPHA approval' >&2
+    exit 1
+}
+ticket_rows="$(docker exec "$pg" psql -X -tA -v ON_ERROR_STOP=1 \
+    -h /var/run/postgresql -U postgres -d "$database" \
+    -c 'SELECT count(*) FROM residentchat.tickets')"
+[[ "$ticket_rows" == 0 ]] || {
+    echo 'RC-07 FAIL: a ticket was persisted without authorization' >&2
+    exit 1
+}
+echo 'RC-07 AUTHORIZATION GATE PASS: JWT required, cross-tenant denied, zero tickets'
 
 # Release the global watcher lock once build is finished; session containers
 # have unique names and are only removed by this script's own cleanup.
