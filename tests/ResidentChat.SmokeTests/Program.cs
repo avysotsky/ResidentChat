@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using ResidentChat.Api;
+using ResidentChat.Api.Operator;
 using ResidentChat.Core.Ingress;
 using ResidentChat.Core.LocalAi;
 using ResidentChat.Core.Knowledge;
@@ -106,6 +107,8 @@ try
             "response cannot echo chat content");
     }
 
+    Check(SyntheticConsolePage.JavaScript.Contains("busy = false;\n              await refresh();", StringComparison.Ordinal),
+        "status control unlocked before rendering refreshed proposals");
     RunApprovedFaqPolicyLab();
     RunSyntheticDemoPolicyLab();
     RunSyntheticApprovalPolicyLab();
