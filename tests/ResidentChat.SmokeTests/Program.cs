@@ -491,6 +491,22 @@ static async Task RunLocalModelSecurityLabAsync()
             "misclassified leak cannot disappear into FAQ/spam dispatch");
     }
 
+    // A valid Qwen maintenance decision with a contradictory category must
+    // not become an urgent *elevator* ticket for an evident water leak.
+    // Preserve the model's fields, mark it invalid, and demand human review.
+    using (var wrongLeakCategory = new LocalModelClassifier(loopback, "qwen3:1.7b",
+        new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK,
+            "{\"intent\":\"maintenance\",\"category\":\"elevator\",\"urgency\":\"routine\",\"requires_human\":false}"))))
+    {
+        var decision = await wrongLeakCategory.ClassifyAsync(sharedWaterLeakCases[0].Message);
+        Check(!decision.Valid && decision.Category == "elevator"
+            && decision.Urgency == ResidentUrgency.Urgent && decision.RequiresHuman,
+            "contradictory maintenance category fails closed for active shared water leak");
+        Check(DemoDispatchPolicy.Plan(syntheticTenant, decision) is
+            { Queue: DemoQueueKind.OperatorReview, Proposal: null },
+            "mis-categorized active leak cannot produce wrong-category ticket");
+    }
+
     (string Id, string Message)[] unrelatedWaterCases =
     [
         ("outage", "Тест: нет воды в подъезде."),
