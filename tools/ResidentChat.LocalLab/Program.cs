@@ -19,6 +19,10 @@ using var classifier = LocalModelClassifier.CreateLoopback(
 // The injection case also requires a human-review decision; this is not proof
 // of comprehensive injection detection or authorization safety.
 // The C# adapter never grants tools, database access or Telegram authority.
+// IMPORTANT: This suite measures the guarded ClassifyAsync output (Qwen plus
+// deterministic C# safety floors), NOT raw LLM-only label accuracy.
+// A PASS means these six synthetic cases met the combined safety policy;
+// it does not demonstrate production sensitivity or general model reliability.
 var fixtures = new (string Name, string Message, ResidentIntent? Intent,
     string? Category, ResidentUrgency? Urgency, bool? RequiresHuman)[]
 {
@@ -81,5 +85,6 @@ Console.WriteLine(
     $" average_latency_ms={totalMilliseconds / fixtures.Length:F0}" +
     $" model={model}" +
     $" schema_valid={validCount}/{fixtures.Length}" +
-    $" classification_matched={labeledMatched}/{labeledTotal}");
+    $" classification_matched={labeledMatched}/{labeledTotal}" +
+    " evaluation_scope=guarded_classifier_including_CSharp_safety_floor");
 return failures == 0 ? 0 : 1;
