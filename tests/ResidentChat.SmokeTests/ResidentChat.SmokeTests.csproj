@@ -10,6 +10,8 @@
     <ProjectReference Include="../../src/ResidentChat.Api/ResidentChat.Api.csproj" />
     <ProjectReference Include="../../src/ResidentChat.Core/ResidentChat.Core.csproj" />
     <ProjectReference Include="../../tools/ResidentChat.LocalLab/ResidentChat.LocalLab.csproj" />
+    <!-- RC-07: build synthetic JWT issuer, never run it in standard smoke tests. -->
+    <ProjectReference Include="../../tools/ResidentChat.LocalLabToken/ResidentChat.LocalLabToken.csproj" />
     <!-- Compile the opt-in synthetic operator demo during the ordinary WSL build. -->
     <ProjectReference Include="../../tools/ResidentChat.Demo/ResidentChat.Demo.csproj" />
     <!-- Compile-only: live synthetic OperatorSmokeTests execute in separate isolated PostgreSQL. -->
