@@ -85,6 +85,36 @@ public sealed class LocalModelClassifier : IDisposable
         "threatened to kill"
     ];
 
+    // Conservative, language-aware triage for ACTIVE water leaks in a shared
+    // building space. Three independent clues are required (shared location,
+    // water and active leakage). This is deliberately NOT a generic keyword
+    // match on "water" or "течёт", which would over-escalate routine outages.
+    // Typos, euphemisms and unseen languages may still escape this heuristic:
+    // this is only a partial safety floor, not emergency detection certification.
+    private static readonly string[] SharedSpaceMarkers =
+    [
+        "лестничн", "подъезд", "под'езд", "подвал", "коридор",
+        "площадк", "лифтовом холле",
+        "сходов", "під'їзд", "підʼїзд", "під’їзд", "підвал",
+        "майданчик", "коридорі",
+        "stairwell", "staircase", "shared hallway", "communal hallway",
+        "common area", "basement", "entrance hall"
+    ];
+
+    private static readonly string[] WaterMarkers = ["вод", "water"];
+
+    private static readonly string[] ActiveLeakMarkers =
+    [
+        "теч", "протек", "протік", "витіка", "утеч", "затоп", "залива",
+        "прорвал", "прорвало", "прорив",
+        "leak", "flood", "burst", "pouring"
+    ];
+
+    private static bool HasSharedSpaceWaterLeak(string message) =>
+        ContainsAny(message, SharedSpaceMarkers)
+        && ContainsAny(message, WaterMarkers)
+        && ContainsAny(message, ActiveLeakMarkers);
+
     private static bool ContainsAny(string message, string[] markers)
     {
         foreach (var marker in markers)
@@ -100,14 +130,18 @@ public sealed class LocalModelClassifier : IDisposable
     {
         var danger = ContainsAny(message, ImmediateDangerMarkers);
         var threat = ContainsAny(message, ThreatMarkers);
+        var activeSharedWaterLeak = HasSharedSpaceWaterLeak(message);
         var injection = HasSuspiciousInstruction(message);
-        if (!danger && !threat && !injection)
+        if (!danger && !threat && !activeSharedWaterLeak && !injection)
             return decision;
 
-        // Keep model-provided intent/category for manual review: keyword
-        // spotting is insufficient evidence to rewrite their semantics.
+        // Never lower model urgency. Raise shared-area active leaks to Urgent
+        // and require human review even if Qwen calls them Routine/no-human.
+        // Leave Valid, intent and category untouched; lexical clues cannot
+        // authorize a ticket or safely replace a comprehensive classifier.
         var urgency = danger ? ResidentUrgency.Emergency
-            : threat && decision.Urgency == ResidentUrgency.Routine
+            : (threat || activeSharedWaterLeak)
+              && decision.Urgency == ResidentUrgency.Routine
                 ? ResidentUrgency.Urgent : decision.Urgency;
         return decision with { Urgency = urgency, RequiresHuman = true };
     }
@@ -176,6 +210,9 @@ public sealed class LocalModelClassifier : IDisposable
           + "use null for non-maintenance categories unless there is an obvious category. "
           + "Choose emergency urgency only for immediate danger, urgent for active hazardous damage, "
           + "routine otherwise. Human review is true for fire, conflict or hazardous emergencies. "
+          + "An active water leak or flooding in shared building areas (stairwell, basement, "
+          + "corridor, entrance) is URGENT maintenance requiring a HUMAN even without injury. "
+          + "Do not label an active shared-space leak as routine or requires_human=false. "
           + "A lift that simply does not work, with no trapped passengers mentioned, is routine "
           + "maintenance with requires_human=false; people trapped in an elevator require "
           + "emergency urgency and human assistance. "
