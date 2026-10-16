@@ -45,6 +45,14 @@ public static class DemoDispatchPolicy
             || decision.Urgency == ResidentUrgency.Emergency)
             return new(DemoQueueKind.OperatorReview);
 
+        // A high-urgency, human-required decision cannot be hidden in an FAQ
+        // or moderation queue by a mistaken (or adversarial) model intent.
+        // In particular this preserves the C# shared-area water-leak floor
+        // even if the model predicts FAQ or Spam instead of Maintenance.
+        if (decision.RequiresHuman && decision.Urgency == ResidentUrgency.Urgent
+            && decision.Intent is not ResidentIntent.Maintenance)
+            return new(DemoQueueKind.OperatorReview);
+
         if (decision.Intent == ResidentIntent.Faq)
             return new(DemoQueueKind.ApprovedFaqRequired);
 
