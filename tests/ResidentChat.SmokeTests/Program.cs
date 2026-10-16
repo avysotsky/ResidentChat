@@ -441,6 +441,99 @@ static async Task RunLocalModelSecurityLabAsync()
             "ordinary FAQ is not escalated by injection heuristics");
     }
 
+    // RC-08: the small Qwen3 model sometimes labels active common-area
+    // water leaks Routine/no-human. This regression mocks EXACTLY that valid
+    // but unsafe model output and proves the final decision is guarded in C#.
+    const string falselyRoutineWater =
+        "{\"intent\":\"maintenance\",\"category\":\"water\",\"urgency\":\"routine\",\"requires_human\":false}";
+    (string Id, string Message)[] sharedWaterLeakCases =
+    [
+        ("ru_stairwell", "Тест: на лестничной площадке течёт вода."),
+        ("ru_stairwell_e", "Тест: на лестничной площадке течет вода."),
+        ("ru_basement", "Тест: вода затопила подвал."),
+        ("ua_entrance", "Тест: у під'їзді тече вода на сходах."),
+        ("ua_basement", "Тест: у підвалі витікає вода з труби."),
+        ("en_stairwell", "Synthetic test: water is leaking in the stairwell."),
+        ("en_basement", "Synthetic test: the basement is flooding with water.")
+    ];
+    var syntheticTenant = Guid.Parse("11111111-1111-4111-8111-111111111111");
+    foreach (var scenario in sharedWaterLeakCases)
+    {
+        using var guarded = new LocalModelClassifier(loopback, "qwen3:1.7b",
+            new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, falselyRoutineWater)));
+        var decision = await guarded.ClassifyAsync(scenario.Message);
+        Check(decision.Valid && decision.Intent == ResidentIntent.Maintenance
+            && decision.Category == "water" && decision.Urgency == ResidentUrgency.Urgent
+            && decision.RequiresHuman,
+            "shared-space active leak cannot be downgraded: " + scenario.Id);
+        var route = DemoDispatchPolicy.Plan(syntheticTenant, decision);
+        Check(route.Proposal is
+            { Priority: TicketPriority.Urgent, RequiresHumanApproval: true }
+            && route.Queue == DemoQueueKind.TicketProposal,
+            "guarded leak is an uncommitted urgent proposal: " + scenario.Id);
+    }
+
+    // Keep the model's reported intent and category unchanged. If a leak is
+    // falsely classified FAQ/Spam, it must be routed to manual review rather
+    // than a low-priority FAQ answer or moderation queue.
+    foreach (var wrongIntent in new[] { "faq", "spam" })
+    {
+        var incorrectModel = "{\"intent\":\"" + wrongIntent
+            + "\",\"category\":null,\"urgency\":\"routine\",\"requires_human\":false}";
+        using var guarded = new LocalModelClassifier(loopback, "qwen3:1.7b",
+            new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, incorrectModel)));
+        var decision = await guarded.ClassifyAsync(sharedWaterLeakCases[0].Message);
+        Check(decision.Valid && decision.Urgency == ResidentUrgency.Urgent
+            && decision.RequiresHuman && decision.Category is null,
+            "wrong model intent preserves manual leak triage");
+        Check(DemoDispatchPolicy.Plan(syntheticTenant, decision) is
+            { Queue: DemoQueueKind.OperatorReview, Proposal: null },
+            "misclassified leak cannot disappear into FAQ/spam dispatch");
+    }
+
+    // A valid Qwen maintenance decision with a contradictory category must
+    // not become an urgent *elevator* ticket for an evident water leak.
+    // Preserve the model's fields, mark it invalid, and demand human review.
+    using (var wrongLeakCategory = new LocalModelClassifier(loopback, "qwen3:1.7b",
+        new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK,
+            "{\"intent\":\"maintenance\",\"category\":\"elevator\",\"urgency\":\"routine\",\"requires_human\":false}"))))
+    {
+        var decision = await wrongLeakCategory.ClassifyAsync(sharedWaterLeakCases[0].Message);
+        Check(!decision.Valid && decision.Category == "elevator"
+            && decision.Urgency == ResidentUrgency.Urgent && decision.RequiresHuman,
+            "contradictory maintenance category fails closed for active shared water leak");
+        Check(DemoDispatchPolicy.Plan(syntheticTenant, decision) is
+            { Queue: DemoQueueKind.OperatorReview, Proposal: null },
+            "mis-categorized active leak cannot produce wrong-category ticket");
+    }
+
+    (string Id, string Message)[] unrelatedWaterCases =
+    [
+        ("outage", "Тест: нет воды в подъезде."),
+        ("apartment_faucet", "Тест: течёт вода из крана в квартире."),
+        ("common_light", "Тест: на лестничной площадке перегорела лампа."),
+        ("maintenance_schedule", "Тест: график уборки коридора и расход воды.")
+    ];
+    foreach (var scenario in unrelatedWaterCases)
+    {
+        using var guarded = new LocalModelClassifier(loopback, "qwen3:1.7b",
+            new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, falselyRoutineWater)));
+        var decision = await guarded.ClassifyAsync(scenario.Message);
+        Check(decision.Valid && decision.Urgency == ResidentUrgency.Routine
+            && !decision.RequiresHuman,
+            "water safety floor stays limited to active shared leaks: " + scenario.Id);
+    }
+
+    using (var invalidWaterModel = new LocalModelClassifier(loopback, "qwen3:1.7b",
+        new SyntheticModelHandler(_ => ModelResponse(HttpStatusCode.OK, "{bad-json"))))
+    {
+        var decision = await invalidWaterModel.ClassifyAsync(sharedWaterLeakCases[0].Message);
+        Check(!decision.Valid && decision.Urgency == ResidentUrgency.Urgent
+            && decision.RequiresHuman
+            && DemoDispatchPolicy.Plan(syntheticTenant, decision).Proposal is null,
+            "invalid model stays invalid: urgent human review, no ticket proposal");
+    }
+
     // Offline adversarial matrix: feed a deliberately incorrect routine/other
     // Ollama response. Dangerous content must trigger independent C# escalation
     // regardless of the model's classification or generated urgency.
