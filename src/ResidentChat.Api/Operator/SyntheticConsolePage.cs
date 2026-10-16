@@ -158,19 +158,36 @@ public static class SyntheticConsolePage
             } finally { busy = false; }
           }
 
-          async function showTicket(item) {
-            if (!sessionJwt || !item.ticketId) return;
+          async function showTicket(item, statusLine) {
+            if (!sessionJwt || !item.ticketId) {
+              statusLine.textContent = "Статус в PostgreSQL: требуется авторизация.";
+              return;
+            }
+            const requestedWith = sessionJwt;
+            statusLine.textContent = "Статус в PostgreSQL: проверяется…";
             try {
               const ticket = await api("/operator/v1/tickets/" + encodeURIComponent(item.ticketId));
+              if (requestedWith !== sessionJwt || !statusLine.isConnected) return;
+              if (!ticket || ticket.ticketId !== item.ticketId)
+                throw new Error("неожиданный ответ API");
               const statuses = {1:"Open", 2:"Escalated", 3:"Resolved"};
-              setStatus("Заявка " + item.caseId + ": " +
-                (statuses[ticket.status] || "Unknown") + " (версия " + ticket.version + ")");
+              const code = String(ticket.status);
+              const current = statuses[code] || (
+                ["Open", "Escalated", "Resolved"].includes(code) ? code : "Unknown");
+              const version = Number.isInteger(ticket.version) ? ticket.version : "?";
+              const summary = "Заявка " + item.caseId + ": " + current +
+                " (версия " + version + ")";
+              statusLine.textContent = "Статус в PostgreSQL: " +
+                current + " · версия " + version;
+              setStatus(summary);
             } catch (error) {
+              if (requestedWith !== sessionJwt || !statusLine.isConnected) return;
+              statusLine.textContent = "Ошибка чтения статуса: " + error.message;
               setStatus("Не удалось получить состояние заявки: " + error.message);
             }
           }
 
-          function render(items) {
+                    function render(items) {
             proposals.replaceChildren();
             if (!Array.isArray(items) || items.length === 0) {
               addText(proposals, "p", "Предложений для этого оператора нет.", "empty");
@@ -189,7 +206,14 @@ public static class SyntheticConsolePage
                 actions.append(makeButton("Отклонить", "danger", () => doAction(item, false)));
               } else if (item.state === "Approved" && item.ticketId) {
                 addText(card, "p", "Ticket ID: " + item.ticketId, "ticket");
-                actions.append(makeButton("Проверить статус", "quiet", () => showTicket(item)));
+                const statusLine = addText(card, "p",
+                  "Статус в PostgreSQL: ещё не проверен", "ticket");
+                statusLine.setAttribute("role", "status");
+                actions.append(makeButton("Проверить статус", "quiet",
+                  () => showTicket(item, statusLine)));
+                // A confirmed ticket is read immediately on load and after approval.
+                // The button remains available for another explicit status check.
+                void showTicket(item, statusLine);
               } else if (item.state === "InDoubt") {
                 addText(card, "p", "Требуется ручная сверка БД; повтор запрещён.", "ticket");
               }
