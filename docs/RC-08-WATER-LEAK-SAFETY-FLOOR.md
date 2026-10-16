@@ -17,7 +17,7 @@ Prompt-only improvements cannot guarantee reliable incident triage. RC-08 adds a
 2. **Water** marker in Russian, Ukrainian or English;
 3. **Active leak/flooding** marker in the relevant language.
 
-For such messages, the final `ResidentDecision` has at least `ResidentUrgency.Urgent` and `RequiresHuman=true`, regardless of a valid but unsafe model recommendation. Its `Valid`, `Intent`, and `Category` remain **unchanged**; a lexical heuristic is not trusted to reinterpret the complete message or make an authorization decision. No automatic write occurs: approvals still require operator authentication, tenant scope, exact human action and PostgreSQL RLS.
+For such messages, the final `ResidentDecision` has at least `ResidentUrgency.Urgent` and `RequiresHuman=true`, regardless of a valid but unsafe model recommendation. Its `Intent` and `Category` remain **unchanged**. If Qwen produces a contradictory Maintenance category such as Elevator for a high-confidence shared-area water leak, `Valid` is set to **false** to force manual review and prevent proposing a wrongly categorized ticket. Otherwise `Valid` is preserved. A lexical heuristic is not trusted to reinterpret the complete message or make an authorization decision. No automatic write occurs: approvals still require operator authentication, tenant scope, exact human action and PostgreSQL RLS.
 
 The `DemoDispatchPolicy` routes urgent human-reviewed non-Maintenance decisions to `OperatorReview` rather than `ApprovedFaqRequired` or `ModerationReview`. This avoids hiding active hazards when Qwen mislabels the intent as FAQ or spam; it never grants additional capabilities to the model.
 
@@ -25,7 +25,7 @@ The local Qwen system instructions additionally state that an active leak/flood 
 
 ## Synthetic regression coverage
 
-Offline smoke fixtures provide a fake Ollama handler that **deliberately returns an incorrect Routine/no-human JSON**. Assertions cover active leaks in Russian (including `ё/е`), Ukrainian and English, basements and stairwells; verify Urgent/human and metadata-only, uncommitted proposal routing; check misleading model FAQ/Spam intents result in a manual operator queue; preserve non-escalation of unrelated water outages, apartment faucets, ordinary light outages and schedules; and retain invalid output as invalid with an urgent manual review and **no** ticket proposal.
+Offline smoke fixtures provide a fake Ollama handler that **deliberately returns an incorrect Routine/no-human JSON**. Assertions cover active leaks in Russian (including `ё/е`), Ukrainian and English, basements and stairwells; verify Urgent/human and metadata-only, uncommitted proposal routing; check misleading model FAQ/Spam intents result in a manual operator queue; check a contradictory Elevator category becomes invalid with no ticket proposal; preserve non-escalation of unrelated water outages, apartment faucets, ordinary light outages and schedules; and retain invalid output as invalid with an urgent manual review and **no** ticket proposal.
 
 The live local Qwen3 evaluation still has six fictional cases and can exercise `ClassifyAsync` end-to-end. **Its score is for the guarded classifier (Qwen + deterministic safety policy), not raw Qwen accuracy**, and six fixtures cannot establish production recall or acceptable false-positive rates. See `tools/ResidentChat.LocalLab/Program.cs`.
 
