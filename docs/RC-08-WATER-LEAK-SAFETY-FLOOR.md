@@ -38,6 +38,7 @@ The live local Qwen3 evaluation still has six fictional cases and can exercise `
 
 ## Acceptance gates
 
+- One-shot opt-in offline owner gate: `tools/rc-08-water-safety-acceptance.sh <EXACT_SHA>` materialized as a UTF-8 LF file from the pinned Git commit. It uses the existing preinstalled Docker .NET 10 image and local NuGet cache, a shared owner-runner lock, `--network none`, no databases, synthetic messages and a fake Ollama handler; it cleans its one temporary workspace. Do not stream the shell source via PowerShell stdin (which previously truncated RC-05). This gate reports `RC-08 OFFLINE WATER SAFETY PASS` only after the C# smoke test returns 0. The shell gate was added as a fallback because PR #13 did not yet receive a WSL watcher artifact; it is NOT evidence of execution until the owner runs it.
 - Immutable WSL2 SHA-specific restore/build/smoke report.
 - Separate SHA-specific local Qwen3 synthetic fixture evaluation.
 - If any fail, diagnose and correct before calling this slice accepted. No merging/deployment regardless of PASS until independent security review and owner authorization.
