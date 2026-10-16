@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using ResidentChat.Api;
+using ResidentChat.Api.Operator;
 using ResidentChat.Core.Ingress;
 using ResidentChat.Core.LocalAi;
 using ResidentChat.Core.Knowledge;
@@ -46,6 +47,16 @@ try
     {
         var response = await PostAsync(disabled.Client, GroupMessage(100, AllowedChat), Secret);
         Check(response.Status == HttpStatusCode.NotFound, "webhook disabled by default");
+        using var console = await disabled.Client.GetAsync("/operator/console");
+        Check(console.StatusCode == HttpStatusCode.NotFound,
+            "operator console disabled without explicit configuration");
+    }
+
+    await using (var consoleWithoutOperator = await StartAsync(false, false, true))
+    {
+        using var response = await consoleWithoutOperator.Client.GetAsync("/operator/console");
+        Check(response.StatusCode == HttpStatusCode.NotFound,
+            "explicit console switch cannot bypass absent operator JWT configuration");
     }
 
     await using (var invalid = await StartAsync(true, false))
@@ -96,6 +107,23 @@ try
             "response cannot echo chat content");
     }
 
+    var browserScript = SyntheticConsolePage.JavaScript;
+    var actionStart = browserScript.IndexOf("async function doAction(", StringComparison.Ordinal);
+    var actionEnd = browserScript.IndexOf("async function showTicket(", StringComparison.Ordinal);
+    Check(actionStart >= 0 && actionEnd > actionStart, "operator action handler present");
+    var action = browserScript[actionStart..actionEnd];
+    var release = action.IndexOf("busy = false;", StringComparison.Ordinal);
+    var render = action.IndexOf("await refresh();", StringComparison.Ordinal);
+    Check(release >= 0 && render > release,
+        "status control unlocked before rendering refreshed proposals");
+    Check(browserScript.Contains("statusLine.textContent = \"Статус в PostgreSQL: \"",
+            StringComparison.Ordinal)
+        && browserScript.Contains("() => showTicket(item, statusLine)",
+            StringComparison.Ordinal)
+        && browserScript.Contains("void showTicket(item, statusLine);",
+            StringComparison.Ordinal)
+        && browserScript.Contains("requestedWith !== sessionJwt", StringComparison.Ordinal),
+        "approved card auto-fetches tenant-authorized ticket status inline and handles stale sessions");
     RunApprovedFaqPolicyLab();
     RunSyntheticDemoPolicyLab();
     RunSyntheticApprovalPolicyLab();
@@ -236,13 +264,15 @@ static async Task<(HttpStatusCode Status, string Body)> PostAsync(
     return (response.StatusCode, await response.Content.ReadAsStringAsync());
 }
 
-static async Task<LocalTestServer> StartAsync(bool enabled, bool configured)
+static async Task<LocalTestServer> StartAsync(bool enabled, bool configured, bool consoleEnabled = false)
 {
     var cfg = new Dictionary<string, string?>
     {
         ["ResidentChat:Telegram:Enabled"] = enabled ? "true" : "false",
         ["ResidentChat:Telegram:WebhookSecret"] = configured ? Secret : "",
-        ["ResidentChat:Telegram:AllowedChatIds:0"] = AllowedChat.ToString()
+        ["ResidentChat:Telegram:AllowedChatIds:0"] = AllowedChat.ToString(),
+        ["ResidentChat:OperatorConsole:Enabled"] = consoleEnabled.ToString(),
+        ["ResidentChat:OperatorConsole:Mode"] = consoleEnabled ? "synthetic-lab-only" : ""
     };
     var app = ResidentChatApp.Build([], cfg);
     app.Urls.Add("http://127.0.0.1:0");

@@ -37,6 +37,7 @@ public static class ResidentChatApp
 
         // No external AI providers or message-forwarding dependencies are registered.
         OperatorApi.Register(builder);
+        SyntheticConsoleApi.Register(builder);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Routing.EndpointMiddleware", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Http.Result", LogLevel.Warning);
@@ -45,6 +46,7 @@ public static class ResidentChatApp
         app.UseAuthentication();
         app.UseAuthorization();
         OperatorApi.Map(app);
+        SyntheticConsoleApi.Map(app);
         app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
         // No Telegram outbound calls, local/remote AI calls, message storage or processing yet.
