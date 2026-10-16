@@ -116,6 +116,14 @@ try
     var render = action.IndexOf("await refresh();", StringComparison.Ordinal);
     Check(release >= 0 && render > release,
         "status control unlocked before rendering refreshed proposals");
+    Check(browserScript.Contains("statusLine.textContent = \"Статус в PostgreSQL: \"",
+            StringComparison.Ordinal)
+        && browserScript.Contains("() => showTicket(item, statusLine)",
+            StringComparison.Ordinal)
+        && browserScript.Contains("void showTicket(item, statusLine);",
+            StringComparison.Ordinal)
+        && browserScript.Contains("requestedWith !== sessionJwt", StringComparison.Ordinal),
+        "approved card auto-fetches tenant-authorized ticket status inline and handles stale sessions");
     RunApprovedFaqPolicyLab();
     RunSyntheticDemoPolicyLab();
     RunSyntheticApprovalPolicyLab();
