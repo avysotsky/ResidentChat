@@ -137,13 +137,24 @@ public sealed class LocalModelClassifier : IDisposable
 
         // Never lower model urgency. Raise shared-area active leaks to Urgent
         // and require human review even if Qwen calls them Routine/no-human.
-        // Leave Valid, intent and category untouched; lexical clues cannot
-        // authorize a ticket or safely replace a comprehensive classifier.
+        // Lexical clues cannot authorize a ticket or safely replace a
+        // comprehensive classifier. If Qwen emits a contradictory maintenance
+        // category (e.g. Elevator for an obvious water leak), FAIL CLOSED to
+        // operator review instead of proposing a wrongly categorized ticket.
+        var wrongMaintenanceCategory = activeSharedWaterLeak
+            && decision.Valid
+            && decision.Intent == ResidentIntent.Maintenance
+            && decision.Category != "water";
         var urgency = danger ? ResidentUrgency.Emergency
             : (threat || activeSharedWaterLeak)
               && decision.Urgency == ResidentUrgency.Routine
                 ? ResidentUrgency.Urgent : decision.Urgency;
-        return decision with { Urgency = urgency, RequiresHuman = true };
+        return decision with
+        {
+            Valid = decision.Valid && !wrongMaintenanceCategory,
+            Urgency = urgency,
+            RequiresHuman = true
+        };
     }
 
     private readonly Uri _endpoint;
