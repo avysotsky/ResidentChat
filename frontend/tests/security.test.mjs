@@ -25,6 +25,8 @@ test("explicit approval, no retry of mutations and in-memory JWT", () => {
   const api = readFileSync(new URL("../src/api/operatorApi.ts", import.meta.url), "utf8");
   assert.match(app, /window\.confirm\(/);
   assert.match(app, /actionInFlight\.current/);
+  assert.match(app, /addEventListener\("pagehide", scrubOnPageHide\)/);
+  assert.match(app, /const scrubOnPageHide = \(\) => disconnect\(\)/);
   assert.match(app, /setBlockedIds/);
   assert.match(api, /let syntheticJwt = ""/);
   assert.match(api, /credentials: "omit"/);

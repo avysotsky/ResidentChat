@@ -34,11 +34,17 @@ export default function App() {
     setFeedback("Доступ скинуто; локальний тестовий JWT видалено з пам'яті.");
   }, []);
 
-  // A React unmount/navigation must not retain the token or remote readbacks.
-  useEffect(() => () => {
-    activeRead.current?.abort();
-    clearSyntheticToken();
-  }, []);
+  // bfcache pagehide does not unmount React: scrub any visible tenant queue
+  // as well as the memory-only JWT before the page can be restored via Back.
+  useEffect(() => {
+    const scrubOnPageHide = () => disconnect();
+    window.addEventListener("pagehide", scrubOnPageHide);
+    return () => {
+      window.removeEventListener("pagehide", scrubOnPageHide);
+      activeRead.current?.abort();
+      clearSyntheticToken();
+    };
+  }, [disconnect]);
 
   const refresh = useCallback(async (expectedSession = session.current) => {
     if (!hasSyntheticToken()) {
