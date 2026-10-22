@@ -50,7 +50,7 @@ export function ProposalCard({
       </div>
       <dl className="metadata">
         <div><dt>Категорія</dt><dd>{proposal.category}</dd></div>
-        <div><dt>Пріоритет</dt><dd>{proposal.priority}</dd></div>
+        <div><dt>Пріоритет</dt><dd className={proposal.priority === "Urgent" ? "priority-urgent" : ""}>{proposal.priority}</dd></div>
       </dl>
       {ticketId && (
         <div className="ticket-readback" aria-live="polite">
@@ -59,8 +59,11 @@ export function ProposalCard({
           {checking && <p role="status">Читаємо статус заявки…</p>}
           {readError && <p role="alert" className="error">Не вдалося прочитати стан: {readError}</p>}
           {readback && !checking && !readError && (
-            <p role="status" className="db-status">
-              {readback.status} <span>· версія {readback.version}</span>
+            <p role="status" className={"db-status db-" + readback.status.toLowerCase()}>
+              <strong>{readback.status}</strong> <span>· версія {readback.version}</span>
+              {readback.status === "Escalated" && (
+                <small>Потребує уваги диспетчера</small>
+              )}
             </p>
           )}
           <button className="button-secondary" type="button"

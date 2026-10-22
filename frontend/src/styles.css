@@ -53,3 +53,12 @@ input:focus-visible,button:focus-visible{outline:3px solid #6ba9d9;outline-offse
 .filter-button span{margin-left:6px;color:#698097}
 .filter-button.selected{background:#173d5f;color:#fff;border-color:#173d5f}
 .filter-button.selected span{color:#c9e0f0}
+
+/* Ticket lifecycle must not use a green 'safe' treatment for Escalated.
+   Status names and versions come only from signed tenant-scoped API GETs. */
+.priority-urgent{color:#a13d27}
+.db-status{display:flex;align-items:baseline;flex-wrap:wrap;gap:5px 8px}
+.db-open{color:#405976}
+.db-escalated{color:#a13d27}
+.db-escalated small{display:block;width:100%;font-size:.82rem;font-weight:600}
+.db-resolved{color:#1b6545}
