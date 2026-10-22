@@ -34,7 +34,7 @@ export function OperatorLogin({ authenticated, busy, onConnect, onDisconnect }: 
             placeholder="Вставте короткочасний токен локальної лабораторії"
             disabled={busy} maxLength={4096} />
           <button disabled={busy} type="submit">Відкрити чергу</button>
-          <button disabled={!authenticated && !busy} type="button"
+          <button disabled={busy} type="button"
             className="button-secondary" onClick={() => {
               if (input.current) input.current.value = "";
               onDisconnect();

@@ -36,11 +36,34 @@ public static class SyntheticConsoleApi
         if (!config.Enabled || !operatorConfig.Ready)
             return;
 
+        // Prefer the production Vite bundle when explicitly generated and
+        // packaged with .NET. The original RC-06 HTML stays as a synthetic
+        // fallback until the independent React build/acceptance gate passes.
+        // Neither route can serve non-loopback requests.
         app.MapGet("/operator/console", (HttpContext ctx) =>
         {
             if (!IsDirectLoopback(ctx)) return Results.NotFound();
             SetBrowserSecurityHeaders(ctx);
-            return Results.Content(SyntheticConsolePage.Html, "text/html; charset=utf-8");
+            var reactIndex = Path.Combine(AppContext.BaseDirectory, "operator-ui", "index.html");
+            return File.Exists(reactIndex)
+                ? Results.File(reactIndex, "text/html; charset=utf-8")
+                : Results.Content(SyntheticConsolePage.Html, "text/html; charset=utf-8");
+        });
+
+        // Serve ONLY local Vite hash-named JS/CSS assets, with no static file
+        // middleware, directory traversal, CDN or cross-origin permissions.
+        app.MapGet("/operator/console/assets/{assetName}", (string assetName, HttpContext ctx) =>
+        {
+            if (!IsDirectLoopback(ctx)) return Results.NotFound();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(assetName,
+                @"^index-[a-zA-Z0-9_-]+[.](js|css)$",
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+                return Results.NotFound();
+            var asset = Path.Combine(AppContext.BaseDirectory, "operator-ui", "assets", assetName);
+            if (!File.Exists(asset)) return Results.NotFound();
+            SetBrowserSecurityHeaders(ctx);
+            return Results.File(asset, assetName.EndsWith(".js", StringComparison.Ordinal)
+                ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8");
         });
 
         app.MapGet("/operator/console/app.js", (HttpContext ctx) =>

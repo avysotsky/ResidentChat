@@ -1,6 +1,6 @@
 # ADR RC-09 — React frontend for ResidentChat
 
-**Decision:** Accepted by product owner on 2026-10-22. **Implementation:** Not yet started; this document prepares the next development slice. **Scope:** synthetic, local-only operator console. **Repo:** private `avysotsky/ResidentChat`.
+**Decision:** Accepted by product owner on 2026-10-22. **Implementation:** RC-09 React/TypeScript source committed on the Draft branch; React build/bundling and independent acceptance are separate gates, not presumed PASS. **Scope:** synthetic, local-only operator console. **Repo:** private `avysotsky/ResidentChat`.
 
 ## Chosen stack
 - **React + TypeScript + Vite**, separate `frontend/` application, component-based UI.
