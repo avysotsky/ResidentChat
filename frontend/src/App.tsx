@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Proposal } from "./api/contracts";
 import {
-  changeProposal, clearSyntheticToken, getProposals,
+  changeProposal, clearSyntheticToken, getProposals, OperatorHttpError,
   hasSyntheticToken, useSyntheticToken
 } from "./api/operatorApi";
 import { OperatorLogin } from "./components/OperatorLogin";
@@ -60,6 +60,10 @@ export default function App() {
       if (session.current !== expectedSession || controller.signal.aborted) return false;
       // Never retain a prior tenant's queue when a signed JWT fails.
       setProposals([]);
+      if (error instanceof OperatorHttpError && (error.status === 401 || error.status === 403)) {
+        clearSyntheticToken();
+        setAuthenticated(false);
+      }
       setFeedback("Не вдалося прочитати чергу: " +
         (error instanceof Error ? error.message : "невідома помилка"));
       return false;
