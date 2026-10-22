@@ -218,6 +218,18 @@ try
         Check((await Get(uiClient, "/operator/console/app.js", operator1))
             .StatusCode == HttpStatusCode.OK,
             "static browser script served from same loopback origin");
+        using var missingReactAsset = await Get(uiClient,
+            "/operator/console/assets/index-NOT-A-REAL-HASH.js", operator1);
+        Check(missingReactAsset.StatusCode == HttpStatusCode.NotFound,
+            "unknown JS bundle cannot fall through to arbitrary local files");
+        using var invalidAsset = await Get(uiClient,
+            "/operator/console/assets/config.json", operator1);
+        Check(invalidAsset.StatusCode == HttpStatusCode.NotFound,
+            "only versioned JS/CSS assets can be requested");
+        Check(html.Headers.TryGetValues("Cache-Control", out var noStore)
+            && noStore.Any(value => value.Contains("no-store", StringComparison.Ordinal)),
+            "synthetic operator HTML explicitly disables browser cache");
+
 
         using var missing = await Get(uiClient,
             "/operator/console/v1/proposals", null);

@@ -37,3 +37,11 @@ Check that `.lab-api/operator-ui/index.html` and its local Vite hash-named JS/CS
 6. Local Qwen3 guarded model test (unrelated to React, does not run from browser).
 
 No merge, Telegram, real residents, hosted AI, production deployment or new CI workflow authorized.
+
+## RC-09 offline SHA-scoped frontend gate (added after initial React implementation)
+
+A standalone, networkless gate lives at `tools/rc-09-react-offline-gate.sh`. It uses the same WSL2 source mirror and execution lock as the existing Draft-PR watcher, archives the **exact** SHA, and requires an already installed **offline** Node 22 image, offline npm cache, reviewed committed `package-lock.json` and .NET/NuGet image/cache. It then runs `npm ci --offline --ignore-scripts`, Node synthetic API/contract/security tests, TypeScript/Vite build, self-hosted artifact validation, and networkless `dotnet publish`; it verifies the React index and hash-named JS/CSS are really packaged. It destroys the temporary workspace and returns `NOT_RUN` if dependencies/lockfile are missing, never inventing a PASS.
+
+This script is intentionally **not** wired into GitHub Actions or the .NET-only watcher; it does not run on the user's WSL2 automatically just by being committed. Its PASS alone still does not prove live loopback HTTP, PostgreSQL integration, or browser acceptance. It does not install Docker images, fetch npm packages, or modify the external WSL2 runner.
+
+The npm registry is not accessible in the assistant's isolated environment. Therefore no fabricated `package-lock.json` or unverified dependency integrity hashes have been committed. A separately authorized offline cache provisioning/lockfile review step is required to close this gate; no production deployment or merge is permitted.
