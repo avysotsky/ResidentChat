@@ -50,3 +50,18 @@ The npm registry is not accessible in the assistant's isolated environment. Ther
 The disposable `ResidentChat.OperatorSmokeTests` now exercises an ephemeral **synthetic asset fixture** at the actual loopback Kestrel routes. It checks index override, hash-named JS/CSS, MIME types, and strict CSP; the fixture is removed in a `finally` block. This does **not** substitute for the real Vite bundle acceptance. The existing PG acceptance script can run it only under the authorized WSL2 disposable PostgreSQL environment; the ordinary WSL2 smoke watcher merely builds that project.
 
 The Node runner now copies only the local npm `_cacache` into disposable writable scratch space (never mounts `.npmrc` or secret-bearing live npm config) and restricts package versions to Node 22.12+. The lockfile and offline cache remain prerequisites; their absence is a NOT_RUN condition, not a PASS.
+
+## RC-09 live Kestrel + disposable PostgreSQL end-to-end mode
+
+At the exact pinned Git SHA, `tools/rc-07-local-browser.sh <SHA> --pg-acceptance`
+starts **real ASP.NET Core Kestrel** bound to 127.0.0.1:18760 and a **real PostgreSQL 17** disposable instance (Unix socket and `--network none`, tmpfs storage). The script generates separate ephemeral signed operator JWTs for fictional ALPHA/BETA buildings and performs real HTTP / SQL verification:
+
+- JWT-less GET is 401; a Beta JWT attempting Alpha approval is 404; real SQL tickets remain zero.
+- Wrong case confirmation returns 400 with zero writes.
+- Explicit correct Alpha approval returns 200 and persists exactly one ticket under Alpha tenant with database status 2 (Escalated) and version 1 and one pseudonymous audit row.
+- A signed Alpha ticket GET reads version/status from PostgreSQL; Beta ticket GET is hidden (404) by server scope and RLS.
+- Duplicate Alpha approval is 409; Beta reject is 200; later Beta approval is 409; final actual SQL ticket/audit counts remain 1.
+- If validated Vite assets have been packaged, local React index and JS/CSS route HTTP checks run. If not, the script states React `NOT_RUN` explicitly.
+- Docker containers, test DB, JWT material and scratch files are removed on exit, success or failure. No raw synthetic JWT values appear in PG acceptance output. The existing `--self-test` remains **read-only**, and `--run` remains the opt-in browser session.
+
+**Verification status is distinct from implementation.** Creating this script and obtaining the normal WSL2 watcher PASS does **not** run this live PostgreSQL mode. It must be invoked from the owner's WSL2 host (where Docker/SDK/PostgreSQL images and existing private Git mirror are present), at the exact SHA, and its actual output reviewed. The assistant's isolated container lacks Docker, `dotnet`, PostgreSQL and direct control of the owner's WSL2 process; do not assert PG PASS unless a corresponding run is observed. The API container uses Docker host networking for direct loopback; it is *not* a general outbound firewall proof, so absolutely no real credentials or residents are allowed.
