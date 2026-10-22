@@ -59,6 +59,46 @@ try
             "explicit console switch cannot bypass absent operator JWT configuration");
     }
 
+    // RC-09: automatically exercised by the regular WSL2 smoke watcher.
+    // The operator config is fictional and the PostgreSQL address deliberately
+    // does not exist. Only static GETs and denied anonymous API requests run.
+    await using (var consoleLab = await StartAsync(false, false, true, true))
+    {
+        using var page = await consoleLab.Client.GetAsync("/operator/console");
+        var html = await page.Content.ReadAsStringAsync();
+        Check(page.StatusCode == HttpStatusCode.OK
+            && html.Contains("ResidentChat", StringComparison.OrdinalIgnoreCase),
+            "RC-09 opt-in loopback page is served without any database connection");
+        Check(page.Headers.TryGetValues("Content-Security-Policy", out var csp)
+            && csp.Single().Contains("default-src 'none'", StringComparison.Ordinal)
+            && csp.Single().Contains("script-src 'self'", StringComparison.Ordinal)
+            && csp.Single().Contains("connect-src 'self'", StringComparison.Ordinal)
+            && !csp.Single().Contains("unsafe-inline", StringComparison.Ordinal),
+            "RC-09 strict CSP retained on the actual HTTP page");
+        Check(page.Headers.TryGetValues("Cache-Control", out var noStore)
+            && noStore.Single().Contains("no-store", StringComparison.Ordinal),
+            "RC-09 operator HTML cannot be cached");
+        Check((await consoleLab.Client.GetAsync("/operator/console/assets/config.json"))
+            .StatusCode == HttpStatusCode.NotFound,
+            "RC-09 asset routes cannot expose configuration or arbitrary files");
+        Check((await consoleLab.Client.GetAsync(
+            "/operator/console/assets/index-NOTREAL.js")).StatusCode
+            == HttpStatusCode.NotFound,
+            "RC-09 unknown hashed asset cannot be served");
+        Check((await consoleLab.Client.GetAsync("/operator/console/v1/proposals"))
+            .StatusCode == HttpStatusCode.Unauthorized,
+            "RC-09 anonymous operator cannot read synthetic tenant queue");
+        using var unauthorizedApproval = new HttpRequestMessage(
+            HttpMethod.Post, "/operator/console/v1/proposals/ALPHA-WATER/approve")
+        {
+            Content = new StringContent(
+                """{"confirmation":"APPROVE ALPHA-WATER"}""", Encoding.UTF8, "application/json")
+        };
+        using var denied = await consoleLab.Client.SendAsync(unauthorizedApproval);
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "RC-09 anonymous POST denied before PostgreSQL is touched");
+    }
+
     await using (var invalid = await StartAsync(true, false))
     {
         var response = await PostAsync(invalid.Client, GroupMessage(101, AllowedChat), Secret);
@@ -264,7 +304,8 @@ static async Task<(HttpStatusCode Status, string Body)> PostAsync(
     return (response.StatusCode, await response.Content.ReadAsStringAsync());
 }
 
-static async Task<LocalTestServer> StartAsync(bool enabled, bool configured, bool consoleEnabled = false)
+static async Task<LocalTestServer> StartAsync(bool enabled, bool configured,
+    bool consoleEnabled = false, bool operatorConfigured = false)
 {
     var cfg = new Dictionary<string, string?>
     {
@@ -274,6 +315,20 @@ static async Task<LocalTestServer> StartAsync(bool enabled, bool configured, boo
         ["ResidentChat:OperatorConsole:Enabled"] = consoleEnabled.ToString(),
         ["ResidentChat:OperatorConsole:Mode"] = consoleEnabled ? "synthetic-lab-only" : ""
     };
+    if (operatorConfigured)
+    {
+        cfg["ResidentChat:Operator:Enabled"] = "true";
+        cfg["ResidentChat:Operator:Issuer"] = "residentchat.synthetic.test";
+        cfg["ResidentChat:Operator:Audience"] = "residentchat.synthetic.operator";
+        cfg["ResidentChat:Operator:JwtSigningKey"] =
+            "RC09_SYNTHETIC_ONLY_SIGNING_KEY_NO_REAL_ACCOUNT_12345";
+        cfg["ResidentChat:Operator:AuditHmacKey"] =
+            "RC09_SYNTHETIC_ONLY_AUDIT_KEY_NO_REAL_ACCOUNT_54321";
+        cfg["ResidentChat:Operator:ConnectionString"] =
+            "Host=/tmp/rc09-no-postgresql;Database=synthetic_only;Username=synthetic";
+        cfg["ResidentChat:Operator:AllowedTenantIds:0"] =
+            "11111111-1111-4111-8111-111111111111";
+    }
     var app = ResidentChatApp.Build([], cfg);
     app.Urls.Add("http://127.0.0.1:0");
     await app.StartAsync();
