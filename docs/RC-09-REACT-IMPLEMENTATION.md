@@ -45,3 +45,8 @@ A standalone, networkless gate lives at `tools/rc-09-react-offline-gate.sh`. It 
 This script is intentionally **not** wired into GitHub Actions or the .NET-only watcher; it does not run on the user's WSL2 automatically just by being committed. Its PASS alone still does not prove live loopback HTTP, PostgreSQL integration, or browser acceptance. It does not install Docker images, fetch npm packages, or modify the external WSL2 runner.
 
 The npm registry is not accessible in the assistant's isolated environment. Therefore no fabricated `package-lock.json` or unverified dependency integrity hashes have been committed. A separately authorized offline cache provisioning/lockfile review step is required to close this gate; no production deployment or merge is permitted.
+
+## RC-09 standalone asset HTTP fixture (2026-10-22)
+The disposable `ResidentChat.OperatorSmokeTests` now exercises an ephemeral **synthetic asset fixture** at the actual loopback Kestrel routes. It checks index override, hash-named JS/CSS, MIME types, and strict CSP; the fixture is removed in a `finally` block. This does **not** substitute for the real Vite bundle acceptance. The existing PG acceptance script can run it only under the authorized WSL2 disposable PostgreSQL environment; the ordinary WSL2 smoke watcher merely builds that project.
+
+The Node runner now copies only the local npm `_cacache` into disposable writable scratch space (never mounts `.npmrc` or secret-bearing live npm config) and restricts package versions to Node 22.12+. The lockfile and offline cache remain prerequisites; their absence is a NOT_RUN condition, not a PASS.

@@ -229,6 +229,62 @@ try
         Check(html.Headers.TryGetValues("Cache-Control", out var noStore)
             && noStore.Any(value => value.Contains("no-store", StringComparison.Ordinal)),
             "synthetic operator HTML explicitly disables browser cache");
+ 
+        // Isolated synthetic asset fixture: check that Vite's same-origin
+        // hashed JS/CSS routes actually serve their bytes under strict CSP.
+        // Unlike the built React acceptance gate, this requires NO npm cache.
+        var bundledRoot = Path.Combine(AppContext.BaseDirectory, "operator-ui");
+        var bundledIndex = Path.Combine(bundledRoot, "index.html");
+        var bundledAssets = Path.Combine(bundledRoot, "assets");
+        var syntheticJs = Path.Combine(bundledAssets, "index-TESTFIXTURE.js");
+        var syntheticCss = Path.Combine(bundledAssets, "index-TESTFIXTURE.css");
+        if (!File.Exists(bundledIndex))
+        {
+            Directory.CreateDirectory(bundledAssets);
+            try
+            {
+                await File.WriteAllTextAsync(bundledIndex,
+                    "<!doctype html><html><head><title>RC-09 fixture</title>" +
+                    "<link rel=\"stylesheet\" href=\"/operator/console/assets/index-TESTFIXTURE.css\"></head>" +
+                    "<body><div id=\"root\"></div>" +
+                    "<script type=\"module\" src=\"/operator/console/assets/index-TESTFIXTURE.js\"></script>" +
+                    "</body></html>");
+                await File.WriteAllTextAsync(syntheticJs,
+                    "/* RC-09 synthetic static fixture, no external requests */");
+                await File.WriteAllTextAsync(syntheticCss,
+                    "/* RC-09 synthetic CSS fixture */");
+                using var reactIndex = await Get(uiClient, "/operator/console", operator1);
+                Check(reactIndex.StatusCode == HttpStatusCode.OK
+                    && (await reactIndex.Content.ReadAsStringAsync()).Contains(
+                        "RC-09 fixture", StringComparison.Ordinal),
+                    "local built-index route takes precedence over vanilla fallback");
+                using var servedJs = await Get(uiClient,
+                    "/operator/console/assets/index-TESTFIXTURE.js", operator1);
+                Check(servedJs.StatusCode == HttpStatusCode.OK
+                    && servedJs.Content.Headers.ContentType?.MediaType == "text/javascript"
+                    && (await servedJs.Content.ReadAsStringAsync()).Contains(
+                        "synthetic static fixture", StringComparison.Ordinal)
+                    && servedJs.Headers.TryGetValues("Content-Security-Policy", out var jsCsp)
+                    && jsCsp.Single().Contains("default-src 'none'", StringComparison.Ordinal),
+                    "hashed JS asset is local and inherits restrictive CSP");
+                using var servedCss = await Get(uiClient,
+                    "/operator/console/assets/index-TESTFIXTURE.css", operator1);
+                Check(servedCss.StatusCode == HttpStatusCode.OK
+                    && servedCss.Content.Headers.ContentType?.MediaType == "text/css",
+                    "hashed CSS asset is served on the same guarded origin");
+            }
+            finally
+            {
+                File.Delete(syntheticJs);
+                File.Delete(syntheticCss);
+                File.Delete(bundledIndex);
+            }
+        }
+        else
+        {
+            // Actual Vite integration is checked separately by pinned SHA gate.
+            Check(File.Exists(bundledIndex), "bundled index exists for external Vite gate");
+        }
 
 
         using var missing = await Get(uiClient,

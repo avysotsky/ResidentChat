@@ -62,7 +62,16 @@ else
 fi
 work="$(mktemp -d /tmp/residentchat-rc09.XXXXXXXX)"
 trap 'rm -rf -- "$work"' EXIT
-mkdir -m 700 "$work/src"
+mkdir -m 700 "$work/src" "$work/npm-cache"
+# Copy only npm content-addressed tarballs/metadata; never mount ~/.npmrc,
+# auth tokens, private per-user npm config or the live cache in containers.
+[[ -d "$npm_cache/_cacache" ]] || {
+    echo "RC-09 NOT_RUN: offline npm content-addressed cache is absent"
+    exit 2
+}
+cp -a "$npm_cache/_cacache" "$work/npm-cache/_cacache"
+chmod -R u+rwX "$work/npm-cache"
+
 git --git-dir="$mirror" archive "$sha" | tar -xf - -C "$work/src"
 if [[ ! -f "$work/src/frontend/package-lock.json" ]]; then
     echo "RC-09 NOT_RUN: reviewed reproducible frontend/package-lock.json absent at pinned SHA"
@@ -82,7 +91,7 @@ docker run --rm --pull never --network none --read-only \
     --user "$(id -u):$(id -g)" --workdir /work/frontend \
     --tmpfs /tmp:rw,nosuid,nodev,size=256m \
     --mount "type=bind,src=$work/src,dst=/work" \
-    --mount "type=bind,src=$npm_cache,dst=/npm-cache,readonly" \
+    --mount "type=bind,src=$work/npm-cache,dst=/npm-cache" \
     -e npm_config_cache=/npm-cache \
     -e npm_config_logs_dir=/tmp \
     -e npm_config_offline=true \
