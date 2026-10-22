@@ -65,3 +65,32 @@ starts **real ASP.NET Core Kestrel** bound to 127.0.0.1:18760 and a **real Postg
 - Docker containers, test DB, JWT material and scratch files are removed on exit, success or failure. No raw synthetic JWT values appear in PG acceptance output. The existing `--self-test` remains **read-only**, and `--run` remains the opt-in browser session.
 
 **Verification status is distinct from implementation.** Creating this script and obtaining the normal WSL2 watcher PASS does **not** run this live PostgreSQL mode. It must be invoked from the owner's WSL2 host (where Docker/SDK/PostgreSQL images and existing private Git mirror are present), at the exact SHA, and its actual output reviewed. The assistant's isolated container lacks Docker, `dotnet`, PostgreSQL and direct control of the owner's WSL2 process; do not assert PG PASS unless a corresponding run is observed. The API container uses Docker host networking for direct loopback; it is *not* a general outbound firewall proof, so absolutely no real credentials or residents are allowed.
+
+
+## One-command real acceptance orchestrator
+
+`tools/rc-09-fullstack-acceptance.sh <EXACT_SHA>` is a single-script,
+unprivileged WSL2 orchestrator. It reads every subsidiary script from the **same
+commit in the already fetched private git mirror**, checks their Bash syntax,
+then runs these sequentially:
+
+1. `rc-07-local-browser.sh <SHA> --pg-acceptance`: real Kestrel API process,
+   separate real disposable PostgreSQL 17 server, two signed synthetic JWTs,
+   Alpha/Beta segregation, HTTP approval/rejection, SQL status/version/audit,
+   403/404/409/400 defense and automatic Docker/tmpfs cleanup.
+2. `rc-05-approved-ticket-pg-acceptance.sh <SHA>`: independently starts another
+   isolated PostgreSQL and checks operator JWT claims, direct database RLS,
+   tenant isolation, ticket mutation version, supervisor permissions and audit.
+3. `rc-09-react-offline-gate.sh <SHA>`, **only if** a reviewed lockfile, offline
+   Node image and npm cache are present. Reports `NOT_RUN` when unavailable;
+   it must not be interpreted as React PASS.
+
+The first two stages fail immediately on unexpected results; no mutation retries,
+production DB, Telegram, live user credentials or hosted inference. The
+last step may legitimately be `NOT_RUN` while genuine Kestrel/PostgreSQL
+checks pass. **Bash syntax and the existing WSL2 .NET smoke report do not prove
+that the separate live acceptance stages ran.**
+
+The assistant's GitHub connector cannot invoke host Docker in the user's WSL2.
+Until a test-execution connector is installed, one WSL command must launch this
+one-shot end-to-end suite; do not fabricate a PostgreSQL PASS report.
