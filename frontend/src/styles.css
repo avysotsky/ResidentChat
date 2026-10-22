@@ -44,3 +44,12 @@ input:focus-visible,button:focus-visible{outline:3px solid #6ba9d9;outline-offse
 @media(max-width:650px){.shell{padding:18px 12px}.hero{padding:24px 19px}
   .hero-top{flex-wrap:wrap}.panel{padding:17px}.login-controls>*,.actions>*{width:100%}
   input{min-width:0}.proposal-grid{grid-template-columns:1fr}}
+
+.count-total{display:inline-block;margin-left:7px;font-weight:650;font-size:.85rem;
+  color:#4e6e86;border:1px solid #dce6ee;border-radius:99px;padding:1px 10px;vertical-align:middle}
+.queue-filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 17px}
+.filter-button{border:1px solid #cad9e5;background:white;color:#294b65;
+  border-radius:99px;padding:8px 12px;font-weight:600;font-size:.84rem}
+.filter-button span{margin-left:6px;color:#698097}
+.filter-button.selected{background:#173d5f;color:#fff;border-color:#173d5f}
+.filter-button.selected span{color:#c9e0f0}
