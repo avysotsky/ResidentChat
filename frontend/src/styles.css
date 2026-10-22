@@ -1,0 +1,64 @@
+:root{font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;color:#1b2937;
+  background:#f3f5f8;font-synthesis:none;line-height:1.5}
+*{box-sizing:border-box}body{margin:0}button,input{font:inherit}
+.shell{width:min(1180px,100%);margin:0 auto;padding:44px 28px 28px}
+.hero{background:#142e47;color:#f7fbff;padding:36px 40px;border-radius:20px;margin-bottom:22px;
+  box-shadow:0 13px 35px #14304b24}
+.hero h1{font-size:clamp(1.8rem,4vw,2.65rem);letter-spacing:-.04em;margin:12px 0}
+.hero p:not(.eyebrow){max-width:760px;color:#d8e5ee;margin-bottom:0}
+.hero-top,.section-top{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
+.eyebrow{font-size:.7rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#63809a;margin:0}
+.hero .eyebrow{color:#abcce6}.lab-mark{border:1px solid #7191a7;border-radius:99px;
+  font-size:.78rem;color:#d8e8f5;padding:6px 12px;white-space:nowrap}
+.panel{border:1px solid #dce4eb;background:#fff;border-radius:16px;
+  padding:22px;box-shadow:0 2px 8px #162f4510}
+h2{font-size:1.18rem;margin:4px 0 0}h3{font-size:1.07rem;margin:0;word-break:break-word}
+.login form{margin-top:18px}.login label{display:block;margin-bottom:8px;font-weight:650}
+.login-controls,.actions{display:flex;gap:10px;flex-wrap:wrap}
+input{padding:11px 12px;border:1px solid #9baebf;border-radius:9px;min-width:250px;flex:1}
+button{padding:11px 16px;border:1px solid #173d5f;border-radius:9px;background:#173d5f;
+  color:white;font-weight:670;cursor:pointer}
+.button-secondary{background:#fff;color:#173d5f}.button-danger{background:#fff;
+  border-color:#a1443e;color:#a1443e}
+button:disabled{opacity:.5;cursor:not-allowed}
+input:focus-visible,button:focus-visible{outline:3px solid #6ba9d9;outline-offset:2px}
+.small{font-size:.85rem}.muted{color:#5c6e7d}.login .muted{margin:12px 0 0}
+.feedback{min-height:46px;padding:12px 4px;color:#25435c}
+.queue-heading{align-items:center;margin:8px 0 16px}
+.proposal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:18px}
+.proposal{display:flex;flex-direction:column;gap:13px}
+.status-tag{font-size:.78rem;padding:5px 10px;border-radius:999px;background:#eaf0f5;
+  color:#415970;white-space:nowrap}
+.status-tag.ok{background:#e0f3e7;color:#1b6141}
+.status-tag.warning{background:#fff1d3;color:#875a16}
+.metadata{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:4px 0}
+.metadata dt{font-size:.79rem;color:#688097}.metadata dd{margin:2px 0 0;font-weight:700}
+.ticket-readback{border-top:1px solid #e0e7ed;padding-top:15px}
+.ticket-id{font-size:.78rem;color:#5d7082;overflow-wrap:anywhere}
+.db-status{font-weight:800;color:#1a6545;font-size:1.16rem}
+.db-status span{font-size:.85rem;color:#5d7082;font-weight:550}
+.error{color:#a13129;font-weight:650}.warning-text{background:#fff7e7;
+  border-left:3px solid #be8124;padding:10px;color:#775011;font-size:.87rem}
+.empty{color:#536b7f;margin:0}footer{font-size:.79rem;line-height:1.7;
+  color:#61758a;margin-top:38px;padding:18px 0;border-top:1px solid #d7e0e8}
+@media(max-width:650px){.shell{padding:18px 12px}.hero{padding:24px 19px}
+  .hero-top{flex-wrap:wrap}.panel{padding:17px}.login-controls>*,.actions>*{width:100%}
+  input{min-width:0}.proposal-grid{grid-template-columns:1fr}}
+
+.count-total{display:inline-block;margin-left:7px;font-weight:650;font-size:.85rem;
+  color:#4e6e86;border:1px solid #dce6ee;border-radius:99px;padding:1px 10px;vertical-align:middle}
+.queue-filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 17px}
+.filter-button{border:1px solid #cad9e5;background:white;color:#294b65;
+  border-radius:99px;padding:8px 12px;font-weight:600;font-size:.84rem}
+.filter-button span{margin-left:6px;color:#698097}
+.filter-button.selected{background:#173d5f;color:#fff;border-color:#173d5f}
+.filter-button.selected span{color:#c9e0f0}
+
+/* Ticket lifecycle must not use a green 'safe' treatment for Escalated.
+   Status names and versions come only from signed tenant-scoped API GETs. */
+.priority-urgent{color:#a13d27}
+.db-status{display:flex;align-items:baseline;flex-wrap:wrap;gap:5px 8px}
+.db-open{color:#405976}
+.db-escalated{color:#a13d27}
+.db-escalated small{display:block;width:100%;font-size:.82rem;font-weight:600}
+.db-resolved{color:#1b6545}

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # RC-07: disposable SYNTHETIC browser lab. NO real residents or Telegram.
-# --run serves a loopback-only web UI; --self-test verifies and exits.
+# --run is interactive; --self-test is read-only; --pg-acceptance runs genuine
+# Kestrel and PostgreSQL 17 with fictional tenant JWTs and ticket writes.
 set -Eeuo pipefail
 umask 077
 
-if [[ $# != 2 || ! "$1" =~ ^[0-9a-f]{40}$ || "$2" != "--run" && "$2" != "--self-test" ]]; then
-    echo 'RC-07 USAGE: bash rc-07-local-browser.sh <PINNED_SHA> --run|--self-test'
+if [[ $# != 2 || ! "$1" =~ ^[0-9a-f]{40}$ || ( "$2" != "--run" && "$2" != "--self-test" && "$2" != "--pg-acceptance" ) ]]; then
+    echo 'RC-07 USAGE: bash rc-07-local-browser.sh <PINNED_SHA> --run|--self-test|--pg-acceptance'
     exit 2
 fi
 sha="$1"
@@ -275,6 +276,128 @@ ticket_rows="$(docker exec "$pg" psql -X -tA -v ON_ERROR_STOP=1 \
     exit 1
 }
 echo 'RC-07 AUTHORIZATION GATE PASS: JWT required, cross-tenant denied, zero tickets'
+
+if [[ "$mode" == "--pg-acceptance" ]]; then
+    # These are the real Kestrel HTTP endpoints and genuine PostgreSQL 17
+    # transactions, not a mocked store. Only synthetic Alpha/Beta data.
+    # Never automatically retry a state-changing HTTP request.
+    echo "RC-09 full-stack pinned SHA: $sha"
+    code() {
+        curl --noproxy '*' --silent --show-error --max-time 10 \
+            -o /dev/null -w '%{http_code}' "$@"
+    }
+    expect_http() {
+        if [[ "$1" != "$2" ]]; then
+            echo "RC-09 FAIL: $3: expected HTTP $1, got $2" >&2
+            exit 1
+        fi
+    }
+    scalar() {
+        docker exec "$pg" psql -X -tA -v ON_ERROR_STOP=1 \
+            -h /var/run/postgresql -U postgres -d "$database" -c "$1"
+    }
+
+    expect_http 400 "$(code -H "Authorization: Bearer $alpha_token" \
+        -H 'Content-Type: application/json' \
+        --data '{"confirmation":"APPROVE BETA-ELEVATOR"}' \
+        "$url/operator/console/v1/proposals/ALPHA-WATER/approve")" \
+        'wrong case confirmation refused'
+    [[ "$(scalar 'SELECT count(*) FROM residentchat.tickets')" == 0 ]] || {
+        echo 'RC-09 FAIL: invalid approval persisted a ticket' >&2
+        exit 1
+    }
+    expect_http 200 "$(code -H "Authorization: Bearer $alpha_token" \
+        -H 'Content-Type: application/json' \
+        --data '{"confirmation":"APPROVE ALPHA-WATER"}' \
+        "$url/operator/console/v1/proposals/ALPHA-WATER/approve")" \
+        'positive Alpha approval'
+    persisted="$(scalar "SELECT tenant_id::text || '|' || ticket_id::text ||
+        '|' || status::text || '|' || version::text FROM residentchat.tickets")"
+    [[ "$persisted" =~ ^11111111-1111-4111-8111-111111111111\|[0-9a-f-]{36}\|2\|1$ ]] || {
+        echo 'RC-09 FAIL: PostgreSQL tenant/Escalated/version 1 mismatch' >&2
+        exit 1
+    }
+    ticket_id="$(printf '%s' "$persisted" | cut -d '|' -f2)"
+    [[ "$(scalar 'SELECT count(*) FROM residentchat.ticket_audit')" == 1 ]] || {
+        echo 'RC-09 FAIL: missing pseudonymous audit entry' >&2
+        exit 1
+    }
+    alpha_ticket="$(curl --noproxy '*' --silent --show-error --fail \
+        --max-time 10 -H "Authorization: Bearer $alpha_token" \
+        "$url/operator/v1/tickets/$ticket_id")"
+    [[ "$alpha_ticket" == *"\"ticketId\":\"$ticket_id\""* \
+        && "$alpha_ticket" == *'"status":2'* \
+        && "$alpha_ticket" == *'"version":1'* ]] || {
+        echo 'RC-09 FAIL: Alpha signed status/version readback wrong' >&2
+        exit 1
+    }
+    unset alpha_ticket
+    expect_http 404 "$(code -H "Authorization: Bearer $beta_token" \
+        "$url/operator/v1/tickets/$ticket_id")" \
+        'Beta cross-tenant ticket read blocked'
+    expect_http 409 "$(code -H "Authorization: Bearer $alpha_token" \
+        -H 'Content-Type: application/json' \
+        --data '{"confirmation":"APPROVE ALPHA-WATER"}' \
+        "$url/operator/console/v1/proposals/ALPHA-WATER/approve")" \
+        'duplicate Alpha approval rejected'
+    expect_http 200 "$(code -H "Authorization: Bearer $beta_token" \
+        -H 'Content-Type: application/json' \
+        --data '{"confirmation":"REJECT BETA-ELEVATOR"}' \
+        "$url/operator/console/v1/proposals/BETA-ELEVATOR/reject")" \
+        'Beta rejection without write'
+    expect_http 409 "$(code -H "Authorization: Bearer $beta_token" \
+        -H 'Content-Type: application/json' \
+        --data '{"confirmation":"APPROVE BETA-ELEVATOR"}' \
+        "$url/operator/console/v1/proposals/BETA-ELEVATOR/approve")" \
+        'rejected proposal cannot be approved'
+    beta_queue="$(curl --noproxy '*' --silent --show-error --fail \
+        --max-time 10 -H "Authorization: Bearer $beta_token" \
+        "$url/operator/console/v1/proposals")"
+    [[ "$beta_queue" == *'"caseId":"BETA-ELEVATOR"'* \
+        && "$beta_queue" == *'"state":"Rejected"'* \
+        && "$beta_queue" != *'"ticketId":"'* ]] || {
+        echo 'RC-09 FAIL: Beta queue did not reflect rejection' >&2
+        exit 1
+    }
+    unset beta_queue
+    [[ "$(scalar 'SELECT count(*) FROM residentchat.tickets')" == 1 \
+        && "$(scalar 'SELECT count(*) FROM residentchat.ticket_audit')" == 1 ]] || {
+        echo 'RC-09 FAIL: rejection/duplicate changed SQL rows' >&2
+        exit 1
+    }
+    echo 'RC-09 REAL POSTGRESQL ROWS / AUDIT / RLS / HTTP PASS'
+
+    # Built React is a separate gate; vanilla fallback is NOT React PASS.
+    if [[ -s "$src/.lab-api/operator-ui/index.html" ]]; then
+        html="$(curl --noproxy '*' --silent --show-error --fail \
+            --max-time 10 "$url/operator/console")"
+        [[ "$html" == *'id="root"'* ]] || {
+            echo 'RC-09 FAIL: React root absent from served index' >&2
+            exit 1
+        }
+        assets="$(printf '%s' "$html" |
+            grep -oE '/operator/console/assets/index-[A-Za-z0-9_-]+\.(js|css)' |
+            sort -u)" || {
+            echo 'RC-09 FAIL: Vite asset references missing' >&2
+            exit 1
+        }
+        [[ "$assets" == *'.js'* && "$assets" == *'.css'* ]] || {
+            echo 'RC-09 FAIL: React JS or CSS asset missing' >&2
+            exit 1
+        }
+        while IFS= read -r asset; do
+            [[ -n "$asset" ]] || continue
+            expect_http 200 "$(code "$url$asset")" 'same-origin Vite asset'
+        done <<< "$assets"
+        echo 'RC-09 REACT BUNDLE SAME-ORIGIN HTTP PASS'
+    else
+        echo 'RC-09 REACT BUNDLE NOT_RUN: no validated Vite dist at pinned SHA'
+    fi
+    unset alpha_token beta_token ticket_id persisted
+    echo "RC-09 REAL KESTREL + POSTGRESQL 17 ACCEPTANCE PASS sha=$sha"
+    echo 'RC-09 only fictional tenants; disposable PostgreSQL is removed by cleanup'
+    exit 0
+fi
 
 # Release the global watcher lock once build is finished; session containers
 # have unique names and are only removed by this script's own cleanup.

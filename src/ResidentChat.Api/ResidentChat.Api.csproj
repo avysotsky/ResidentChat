@@ -10,4 +10,16 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
     <PackageReference Include="Npgsql" Version="10.0.0" />
   </ItemGroup>
+  <!-- Offline Vite dist must exist *before* dotnet publish/build to be packaged.
+       This never invokes npm over the network from the .NET build. -->
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)/../../frontend/dist/index.html')">
+    <Content Include="../../frontend/dist/index.html"
+             Link="operator-ui/index.html"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../../frontend/dist/assets/*"
+             Link="operator-ui/assets/%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
