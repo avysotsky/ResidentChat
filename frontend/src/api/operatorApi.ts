@@ -1,4 +1,4 @@
-import { parseProposals, parseTicket } from "./contracts";
+import { parseProposals, parseTicket } from "./contracts.ts";
 import type { Proposal, TicketReadback } from "./contracts";
 
 // A fictional short-lived lab JWT lives ONLY in JS module memory.
@@ -19,12 +19,14 @@ if (typeof window !== "undefined") {
 }
 
 export class OperatorHttpError extends Error {
-  constructor(public readonly status: number) {
+  readonly status: number;
+  constructor(status: number) {
     super(status === 401 ? "HTTP 401: потрібен дійсний JWT"
       : status === 403 ? "HTTP 403: немає доступу до цього будинку"
       : status === 404 ? "HTTP 404: ресурс недоступний"
       : status === 409 ? "HTTP 409: заявку вже опрацьовано"
       : "HTTP " + status);
+    this.status = status;
   }
 }
 async function json(path: string, signal?: AbortSignal, confirmation?: string): Promise<unknown> {
