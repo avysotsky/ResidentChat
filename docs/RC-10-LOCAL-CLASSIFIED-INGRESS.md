@@ -1,70 +1,70 @@
-# RC-10 — bounded local-Qwen-to-PostgreSQL classification gate
+# RC-10 — local Qwen classification with durable encrypted human review
 
-**Draft, source-only; NO real Telegram account, resident or production activation.**
-Stacked on React PR #14. The original synthetic and metadata-only modes remain
-unchanged by default.
+**Draft test-only implementation; no real resident-group or production activation.**
+Stacked on the React frontend branch. All live Telegram, model, review and
+proposal modes are disabled by default.
 
-## Explicit test-only activation
+## Test-group-only configuration (independent opt-ins)
 
-To enable the NEW classified maintenance slice, all previous lab settings
-(authorized negative Telegram group IDs, tenant-mapped `DurableIntake`,
-`DurableProposals:Mode=synthetic-postgres-only` and signed operator/JWT)
-must be valid. Additionally:
+The existing operator JWT, strict tenant mapping, authorized Telegram group
+IDs, durable PostgreSQL intake and durable proposal settings must be valid.
+The review queue must also be configured with a locally managed 32-byte
+AES-256-GCM key (Base64, **never** in Git, CLI arguments or logs).
 
 - `ResidentChat:ClassifiedTelegram:Enabled=true`
-- `ResidentChat:ClassifiedTelegram:Mode=maintenance-only-test-groups`
+- `ResidentChat:ClassifiedTelegram:Mode=maintenance-and-review-test-groups`
 - `ResidentChat:ClassifiedTelegram:OllamaEndpoint=http://127.0.0.1:11434/api/generate`
 - `ResidentChat:ClassifiedTelegram:Model=qwen3:1.7b`
+- `ResidentChat:TelegramReview:Enabled=true`
+- `ResidentChat:TelegramReview:Mode=encrypted-test-groups-only`
+- `ResidentChat:TelegramReview:EncryptionKeyBase64=<secret from local environment>`
 
-All keys are disabled/absent by default. Only `127.0.0.1` or `::1`
-absolute /api/generate loopback is permitted, using a proxy-free HTTP client
-with redirects disabled. No hosted LLM, external embeddings, telemetry,
-model-to-database access or model-issued operator actions.
+The permitted Ollama endpoint is loopback `127.0.0.1` or `::1` with the
+exact path `/api/generate`; external AI, hosted embeddings, proxies,
+redirects and model tool calls are prohibited. All other prerequisite opt-ins
+remain required; the properties above **do not** independently activate
+Telegram or operator authentication.
 
-## Transaction/ACK boundary
+## Admission and acknowledgement
 
-1. The trusted Telegram admission policy checks the webhook secret and
-   allowlisted group; long polling also uses the same trusted group IDs.
-2. For an allowed text update, a **single-flight** C# pipeline passes only
-   the transient text to local Qwen with a 15-second budget, applying the
-   existing independent C# urgency/injection floor.
-3. Only valid classified maintenance proposals from `DemoDispatchPolicy`
-   qualify; every proposal requires subsequent **human approval**.
-   Emergency/conflict/FAQ/spam/ambiguous/failed/timeout/non-text inputs are
-   NOT acknowledged by this maintenance-only test mode. The webhook returns
-   503 or getUpdates holds the offset; no lost unclassified message is
-   falsely marked processed.
-4. `PostgresTelegramIntakeStore.AcceptWithProposalAsync` inserts BOTH
-   the RLS-scoped Telegram intake metadata and RLS-scoped pending proposal
-   in **one PostgreSQL transaction**. No message text is saved. Duplicate
-   update IDs are recognized only if a matching previously committed
-   proposal and HMAC group fingerprint exist. A previous metadata-only
-   intake without any proposal is not incorrectly treated as complete.
-5. Only after commit does the webhook return 200 / getUpdates advance
-   its in-memory offset. Unknown/ambiguous commit is not retried as a
-   new operator action. Existing read-only React proposal list can display
-   the pending item and the operator must sign and explicitly APPROVE/REJECT;
-   ticket creation remains a separate audit-logged transaction.
+1. Strict group allowlisting and tenant mapping are checked before intake.
+2. Text of at most 1,500 characters enters single-flight local Qwen
+   classification with a 15-second budget and an independent C# safety floor.
+   Only suitable maintenance classifications create a **pending proposal**;
+   they can never auto-approve a ticket.
+3. Nonmaintenance, ambiguous, emergency/conflict, failed-model,
+   unsupported/non-text and **1,501–4,096 character** text inputs are routed
+   to the tenant-scoped encrypted PostgreSQL human-review queue.
+   A model-limit excess must **not** erase the original message.
+4. A Telegram update is ACKed only after atomic PostgreSQL intake+proposal
+   or intake+encrypted-review commit. Deduplication occurs before local Qwen
+   work; intake metadata is bound to the HMAC of the admitted group.
+5. Inputs longer than 4,096 characters fail validation: no empty review is
+   committed and no Telegram ACK/offset advance occurs. Oversized inputs
+   require an explicit later policy rather than silent truncation.
+6. React lists encrypted review metadata. An authenticated human must
+   explicitly request a single review detail to decrypt it; permitted reads
+   are pseudonymously audited. Approval/rejection of ticket proposals is
+   a separate signed and audit-logged operator action.
 
-## Critical limitations
+## Important limitations
 
-- This is **not** a reliable all-message Telegram consumer. Nonmaintenance
-  input cannot be safely acknowledged until a proper human-review queue is
-  implemented; continuous retry can block polling. Telegram has its own
-  finite update-retention period, so an extended offline or stuck model
-  **can still lose updates after Telegram expires them**. Do not present this
-  experiment as lossless production ingestion.
-- No permanent encrypted content queue, reviewable message summary or safe
-  retention/redaction policy exists yet. No real residents or real building
-  groups may be connected to this classified test mode.
-- The model adapter is the existing local Qwen integration; a guarded
-  classifier result is not proof of raw-model reliability.
-- Classification uses single-flight gating to reduce interference with
-  TradeOps-v2. No new service, port, Docker process, PowerShell command or
-  Ollama instance is started by these commits. The existing WSL2 auto-watch
-  only executes its ordinary .NET smoke after a Draft PR commit.
-- The independent real PostgreSQL operator acceptance has been extended
-  with a **synthetic C# classification result** and tests atomic intake +
-  proposal commit/duplicate/RLS. It has not been observed running on the
-  owner's disposable PostgreSQL yet. Normal WSL2 .NET PASS does not cover
-  PostgreSQL, live Ollama, React Vite build or browser.
+- PostgreSQL stores encrypted review text transiently with a seven-day
+  expiration, **not** a durable lossless archive. An expired review needs
+  explicit retention/purge and retry semantics before production readiness.
+- Attachment-only messages have no extractable text in this pipeline. A
+  non-text review records an empty textual body, not the actual attachment;
+  this is incomplete coverage. Do not use with real residents.
+- Telegram retains updates for a finite period; connection outages,
+  oversized input, expired reviews or repeated processing failures can
+  block polling and cause eventual loss. This is **not** lossless delivery.
+- Local Qwen classification quality and its 15-second deadline are not
+  validated by the .NET synthetic watcher or RC-11 HTTP frontend test.
+- All test groups must contain synthetic data only. No Telegram send
+  actions, automated emergency handling, production deployment or PR merge
+  are enabled.
+- Current verified tests: synthetic .NET smoke, RC-05 real PostgreSQL
+  operator acceptance on its tested SHA, RC-10 React/Vite build and
+  RC-11 real loopback Kestrel serving packaged React assets. Newly added
+  long-message regression must obtain its own exact-SHA watcher and
+  PostgreSQL acceptance results before being called PASS.
