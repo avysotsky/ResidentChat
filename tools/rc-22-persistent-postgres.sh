@@ -95,7 +95,7 @@ fi
 # Docker container. It is never part of CLI arguments or Docker metadata.
 pg() {
  docker exec -i --user 0 "$name" sh -c \
-  'PGPASSWORD="$(cat /run/secrets/pg_admin)"; export PGPASSWORD; exec psql -X -q -v ON_ERROR_STOP=1 -U postgres -d residentchat'
+  'PGPASSWORD="$(cat /run/secrets/pg_admin)"; export PGPASSWORD; exec psql -X -q -t -A -v ON_ERROR_STOP=1 -U postgres -d residentchat'
 }
 ready=0
 for ((i=0;i<90;i++)); do
