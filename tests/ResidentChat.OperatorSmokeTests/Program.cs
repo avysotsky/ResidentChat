@@ -78,6 +78,17 @@ try
         return 0;
     }
 
+    // RC-21: completely offline PostgreSQL cursor / service-block test.
+    // This mode has NO Telegram or Ollama access; fixed lab IDs only.
+    if (args.Length == 1 && args[0] == "--cursor-postgres-lab")
+    {
+        Check(Environment.GetEnvironmentVariable("RC05_TEST_ISOLATED") == "1",
+            "RC-21 requires disposable local PostgreSQL");
+        await VerifyDurableCursorLabAsync(adminConn!, appConn!);
+        Console.WriteLine("RC-21 POSTGRESQL CURSOR + BLOCKER + RLS PASS");
+        return 0;
+    }
+
     // RC-17: accept ONLY the exact synthetic marker actually seen via
     // Windows DPAPI Telegram getUpdates. No raw update is sent to WSL.
     // This is one-shot HTTP admission, NOT deployment of Telegram polling.
@@ -456,6 +467,124 @@ catch (Exception error)
     return 1;
 }
 
+
+static async Task VerifyDurableCursorLabAsync(
+    string adminConnection, string runtimeConnection)
+{
+    // Only fictional tenant IDs and never a real Telegram credential.
+    const long initial = 99011;
+    const long serviceEvent = 99012;
+    var alpha = Guid.Parse(Tenant1);
+    var beta = Guid.Parse(Tenant2);
+    var cursor = new PostgresTelegramCursorStore(runtimeConnection);
+    var ct = CancellationToken.None;
+
+    Check(await cursor.ReadAsync(alpha, ct) is null,
+        "RC21 cursor requires explicit earliest-update bootstrap");
+    Check(await cursor.InitializeAtAsync(alpha, initial, ct) == initial,
+        "RC21 initial marker saved but not Telegram ACKed");
+    Check(await cursor.ReadAsync(alpha, ct) == initial,
+        "RC21 first cursor persists in PostgreSQL");
+    Check(await cursor.ReadAsync(beta, ct) is null,
+        "RC21 PostgreSQL RLS denies Beta view of Alpha cursor");
+    Check(!await cursor.TryAdvanceAfterAdmissionAsync(alpha, initial, initial, ct),
+        "RC21 cannot ACK without durable intake plus classified proposal/review");
+    Check(!await cursor.TryAdvanceAfterAdmissionAsync(alpha, initial, serviceEvent, ct),
+        "RC21 cannot skip a missing Telegram update ID");
+
+    bool wrongTenantRefused = false;
+    try
+    {
+        await cursor.InitializeAtAsync(beta, initial, ct);
+    }
+    catch (InvalidOperationException)
+    {
+        wrongTenantRefused = true;
+    }
+    Check(wrongTenantRefused,
+        "RC21 one consumer key cannot belong to two tenants");
+
+    // Insert minimal synthetic classified evidence as migration owner.
+    // No actual Telegram or Qwen involved. This tests DB cursor gating,
+    // while RC-14 / RC-18 already test local Qwen->proposal commits.
+    async Task SeedProposal(long updateId)
+    {
+        await using var db = new NpgsqlConnection(adminConnection);
+        await db.OpenAsync();
+        await using var tx = await db.BeginTransactionAsync();
+        await using (var admitted = new NpgsqlCommand("""
+            INSERT INTO residentchat.telegram_intake(
+                tenant_id, update_id, chat_hash, state)
+            VALUES (@tenant, @id, repeat('A',64), 1)
+            """, db, tx))
+        {
+            admitted.Parameters.AddWithValue("tenant", alpha);
+            admitted.Parameters.AddWithValue("id", updateId);
+            await admitted.ExecuteNonQueryAsync();
+        }
+        await using (var proposal = new NpgsqlCommand("""
+            INSERT INTO residentchat.operator_proposals(
+                tenant_id, proposal_id, source_update_id,
+                category, priority, state)
+            VALUES (@tenant, @proposal, @id, 2, 1, 1)
+            """, db, tx))
+        {
+            proposal.Parameters.AddWithValue("tenant", alpha);
+            proposal.Parameters.AddWithValue("proposal", Guid.NewGuid());
+            proposal.Parameters.AddWithValue("id", updateId);
+            await proposal.ExecuteNonQueryAsync();
+        }
+        await tx.CommitAsync();
+    }
+
+    await SeedProposal(initial);
+    Check(await cursor.TryAdvanceAfterAdmissionAsync(alpha, initial, initial, ct),
+        "RC21 CAS after committed synthetic proposal advances exactly one ID");
+    Check(await cursor.ReadAsync(alpha, ct) == serviceEvent,
+        "RC21 persisted offset is previous admitted update plus one");
+    Check(!await cursor.TryAdvanceAfterAdmissionAsync(alpha, initial, initial, ct),
+        "RC21 stale replay cannot advance cursor twice");
+    Check(await cursor.InitializeAtAsync(alpha, initial, ct) == serviceEvent,
+        "RC21 re-bootstrap after restart cannot rewind cursor");
+    Check(await cursor.ReadAsync(beta, ct) is null,
+        "RC21 Beta still cannot read or mutate Alpha cursor");
+
+    Check(await cursor.RecordBlockedAsync(
+        alpha, serviceEvent,
+        PostgresTelegramCursorStore.BlockReason.UnsupportedService, ct),
+        "RC21 service event stored as metadata blocker without text/JSON");
+    Check(!await cursor.RecordBlockedAsync(
+        alpha, serviceEvent,
+        PostgresTelegramCursorStore.BlockReason.UnsupportedService, ct),
+        "RC21 service replay does not create duplicate blocker");
+    Check(!await cursor.TryAdvanceAfterAdmissionAsync(
+        alpha, serviceEvent, serviceEvent, ct),
+        "RC21 service event without classification remains unacknowledged");
+
+    // Even if some other subsystem incorrectly creates an actionable row,
+    // the existing service blocker prevents any Telegram ACK.
+    await SeedProposal(serviceEvent);
+    Check(!await cursor.TryAdvanceAfterAdmissionAsync(
+        alpha, serviceEvent, serviceEvent, ct),
+        "RC21 metadata blocker prevents ACK despite synthetic proposal evidence");
+
+    var restarted = new PostgresTelegramCursorStore(runtimeConnection);
+    Check(await restarted.ReadAsync(alpha, ct) == serviceEvent,
+        "RC21 committed cursor recovered after simulated application restart");
+    Check(await restarted.ReadAsync(beta, ct) is null,
+        "RC21 restart preserves cross-tenant RLS isolation");
+    await using var admin = new NpgsqlConnection(adminConnection);
+    await admin.OpenAsync();
+    await using var query = new NpgsqlCommand("""
+        SELECT count(*) FROM residentchat.telegram_poll_blockers
+        WHERE tenant_id = @tenant AND update_id = @id AND reason = 1
+        """, admin);
+    query.Parameters.AddWithValue("tenant", alpha);
+    query.Parameters.AddWithValue("id", serviceEvent);
+    Check((long)(await query.ExecuteScalarAsync())! == 1,
+        "RC21 durable exactly-once service metadata review blocker exists");
+    Console.WriteLine("RC-21 CURSOR BOOTSTRAP / CAS / BLOCKER / RESTART / RLS PASS");
+}
 
 static async Task VerifyAlphaTelegramWaterAsync(
     string adminConnection, string runtimeConnection, long updateId, string telegramText)
@@ -1277,6 +1406,11 @@ static async Task SetupDatabaseAsync(string connection)
     await using (var cmd = new NpgsqlCommand(reviewMigration, db))
         await cmd.ExecuteNonQueryAsync();
 
+    var cursorMigration = await File.ReadAllTextAsync(
+        Path.Combine(AppContext.BaseDirectory, "migrations", "006_telegram_poll_cursor.sql"));
+    await using (var cmd = new NpgsqlCommand(cursorMigration, db))
+        await cmd.ExecuteNonQueryAsync();
+
     await using (var grant = new NpgsqlCommand("""
         DO $do$
         BEGIN
@@ -1289,6 +1423,8 @@ static async Task SetupDatabaseAsync(string connection)
         GRANT SELECT, INSERT, UPDATE ON residentchat.tickets TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.telegram_intake TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.telegram_reviews TO residentchat_synthetic_app;
+        GRANT SELECT, INSERT, UPDATE ON residentchat.telegram_poll_cursors TO residentchat_synthetic_app;
+        GRANT SELECT, INSERT ON residentchat.telegram_poll_blockers TO residentchat_synthetic_app;
         GRANT INSERT ON residentchat.telegram_review_reads TO residentchat_synthetic_app;
         GRANT SELECT, INSERT, UPDATE ON residentchat.operator_proposals TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.operator_proposal_decisions TO residentchat_synthetic_app;
