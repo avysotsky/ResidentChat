@@ -423,7 +423,8 @@ static async Task VerifyDurableTelegramIntakeAsync(
     }
 
     await using (var first =
-        await StartAsync(runtimeConnection, true, true, durableIntake: true))
+        await StartAsync(runtimeConnection, true, true,
+            consoleEnabled: true, durableIntake: true))
     {
         using var alphaFirst = await PostWebhook(first.Client, alpha);
         Check(alphaFirst.StatusCode == HttpStatusCode.OK
@@ -438,6 +439,33 @@ static async Task VerifyDurableTelegramIntakeAsync(
         using var betaFirst = await PostWebhook(first.Client, beta);
         Check(betaFirst.StatusCode == HttpStatusCode.OK,
             "second tenant has a separate real PostgreSQL durable intake");
+
+        // Read a REAL committed PostgreSQL tenant queue using the same
+        // authorization and loopback rules consumed by the React component.
+        using var alphaVisible = await Get(first.Client,
+            "/operator/console/v1/intake",
+            Jwt(Tenant1, "operator", "synthetic-intake-alpha"));
+        using var betaVisible = await Get(first.Client,
+            "/operator/console/v1/intake",
+            Jwt(Tenant2, "operator", "synthetic-intake-beta"));
+        Check(alphaVisible.StatusCode == HttpStatusCode.OK
+            && betaVisible.StatusCode == HttpStatusCode.OK,
+            "signed operator metadata GET reads committed PostgreSQL");
+        var alphaData = await alphaVisible.Content.ReadAsStringAsync();
+        var betaData = await betaVisible.Content.ReadAsStringAsync();
+        using var alphaJson = JsonDocument.Parse(alphaData);
+        using var betaJson = JsonDocument.Parse(betaData);
+        Check(alphaJson.RootElement.GetArrayLength() == 1
+            && betaJson.RootElement.GetArrayLength() == 1
+            && alphaJson.RootElement[0].GetProperty("updateId").GetInt64() == 92001
+            && betaJson.RootElement[0].GetProperty("updateId").GetInt64() == 92002
+            && !alphaData.Contains(textValue, StringComparison.Ordinal)
+            && !alphaData.Contains("chatHash", StringComparison.OrdinalIgnoreCase),
+            "React metadata readback is tenant-isolated and contains no raw text or chat hash");
+        using var anonymous = await Get(first.Client,
+            "/operator/console/v1/intake", null);
+        Check(anonymous.StatusCode == HttpStatusCode.Unauthorized,
+            "unsigned browser request cannot read real PG intake");
         using var foreign = await PostWebhook(first.Client,
             """{"update_id":92003,"message":{"chat":{"id":-1009999999999,"type":"supergroup"},"text":"ignored"}}""");
         Check(foreign.StatusCode == HttpStatusCode.OK
@@ -448,7 +476,8 @@ static async Task VerifyDurableTelegramIntakeAsync(
 
     // Process restarted, in-memory dedup lost. PostgreSQL unique key persists.
     await using (var restarted =
-        await StartAsync(runtimeConnection, true, true, durableIntake: true))
+        await StartAsync(runtimeConnection, true, true,
+            consoleEnabled: true, durableIntake: true))
     {
         using var repeatAfterRestart = await PostWebhook(restarted.Client, alpha);
         Check(repeatAfterRestart.StatusCode == HttpStatusCode.OK

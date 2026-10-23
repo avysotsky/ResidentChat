@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Npgsql;
 using ResidentChat.Api.Operator;
+using ResidentChat.Api.Ingress;
 using ResidentChat.Core.Demo;
 using ResidentChat.Core.LocalAi;
 
@@ -92,6 +93,23 @@ public static class SyntheticConsoleApi
             SetNoStore(ctx);
             return Results.Ok(items);
         });
+
+        // This is a distinct READ-ONLY list of committed Telegram metadata,
+        // not a queue of classified/approvable tickets. Opt-in test mode only.
+        var durable = app.Services.GetRequiredService<DurableTelegramIntakeOptions>();
+        if (durable.Ready)
+        {
+            group.MapGet("/intake", async (HttpContext ctx,
+                PostgresTelegramIntakeStore store, OperatorOptions settings) =>
+            {
+                if (!IsDirectLoopback(ctx)) return Results.NotFound();
+                if (!OperatorAccess.TryGetScope(ctx.User, settings, out var tenant, out _))
+                    return Results.Forbid();
+                SetNoStore(ctx);
+                var recent = await store.ListRecentAsync(tenant, ctx.RequestAborted);
+                return Results.Ok(recent);
+            });
+        }
 
         group.MapPost("/proposals/{caseId}/approve",
             (string caseId, HttpContext ctx, SyntheticConsoleInbox inbox,

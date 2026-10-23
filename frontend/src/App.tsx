@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Proposal } from "./api/contracts";
+import type { Proposal, IntakeReceipt } from "./api/contracts";
 import {
-  changeProposal, clearSyntheticToken, getProposals, OperatorHttpError,
+  changeProposal, clearSyntheticToken, getProposals, getIntake, OperatorHttpError,
   hasSyntheticToken, useSyntheticToken
 } from "./api/operatorApi";
 import { OperatorLogin } from "./components/OperatorLogin";
 import { ProposalList } from "./components/ProposalList";
+import { TelegramIntakePanel } from "./components/TelegramIntakePanel";
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(false);
   const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [intakeItems, setIntakeItems] = useState<IntakeReceipt[]>([]);
+  const [intakeMessage, setIntakeMessage] = useState("");
   const [feedback, setFeedback] = useState("Очікуємо тестову авторизацію оператора.");
   const [loading, setLoading] = useState(false);
   const [busyCase, setBusyCase] = useState<string | null>(null);
@@ -27,6 +30,8 @@ export default function App() {
     clearSyntheticToken();
     setAuthenticated(false);
     setProposals([]);
+    setIntakeItems([]);
+    setIntakeMessage("");
     setBlockedIds(new Set());
     setBusyCase(null);
     setLoading(false);
@@ -57,7 +62,22 @@ export default function App() {
     setLoading(true);
     try {
       const items = await getProposals(controller.signal);
+      let intake: IntakeReceipt[] = [];
+      let intakeNotice = "";
+      try {
+        intake = await getIntake(controller.signal);
+      } catch (error: unknown) {
+        // The opt-in endpoint deliberately returns 404 when disabled.
+        // Auth revocation must clear the entire session, not just intake.
+        if (error instanceof OperatorHttpError
+          && (error.status === 401 || error.status === 403)) throw error;
+        intakeNotice = error instanceof OperatorHttpError && error.status === 404
+          ? "Тестове приймання Telegram зараз вимкнено."
+          : "Метадані Telegram недоступні; перевірте PostgreSQL окремо.";
+      }
       if (session.current !== expectedSession || controller.signal.aborted) return false;
+      setIntakeItems(intake);
+      setIntakeMessage(intakeNotice);
       setProposals(items);
       setAuthenticated(true);
       setRefreshVersion(n => n + 1);
@@ -66,6 +86,8 @@ export default function App() {
       if (session.current !== expectedSession || controller.signal.aborted) return false;
       // Never retain a prior tenant's queue when a signed JWT fails.
       setProposals([]);
+      setIntakeItems([]);
+      setIntakeMessage("");
       if (error instanceof OperatorHttpError && (error.status === 401 || error.status === 403)) {
         clearSyntheticToken();
         setAuthenticated(false);
@@ -158,6 +180,8 @@ export default function App() {
           disconnect();
         }} />
       <p className="feedback" role="status" aria-live="polite">{feedback}</p>
+      <TelegramIntakePanel authenticated={authenticated} loading={loading}
+        items={intakeItems} message={intakeMessage} />
       <ProposalList proposals={proposals} authenticated={authenticated}
         loading={loading} busy={busyCase !== null} blockedIds={blockedIds}
         refreshVersion={refreshVersion} sessionVersion={sessionVersion}

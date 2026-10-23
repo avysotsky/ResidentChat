@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   useSyntheticToken, clearSyntheticToken, hasSyntheticToken,
-  getProposals, changeProposal, getTicket, OperatorHttpError
+  getProposals, changeProposal, getTicket, getIntake, OperatorHttpError
 } from "../src/api/operatorApi.ts";
 
 const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -19,6 +19,9 @@ test("synthetic operator requests remain same-origin, signed and omit cookies", 
     calls.push({ url, options });
     if (url === "/operator/console/v1/proposals")
       return { ok: true, json: async () => [alpha] };
+    if (url === "/operator/console/v1/intake")
+      return { ok: true, json: async () =>
+        [{updateId: 92001, state: 1, receivedAt: "2026-10-23T09:00:00Z"}] };
     if (url === "/operator/v1/tickets/" + id)
       return { ok: true, json: async () => ({ ticketId: id, status: 2, version: 1 }) };
     if (url === "/operator/console/v1/proposals/ALPHA-WATER/reject")
@@ -29,9 +32,10 @@ test("synthetic operator requests remain same-origin, signed and omit cookies", 
     useSyntheticToken("signed.synthetic.jwt");
     assert.equal(hasSyntheticToken(), true);
     assert.equal((await getProposals())[0].caseId, "ALPHA-WATER");
+    assert.equal((await getIntake())[0].updateId, 92001);
     assert.equal((await getTicket(id)).status, "Escalated");
     await changeProposal(pending, "reject");
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 4);
     for (const call of calls) {
       assert.match(call.url, /^\/operator\//);
       assert.equal(call.options.headers.Authorization, "Bearer signed.synthetic.jwt");
@@ -41,8 +45,9 @@ test("synthetic operator requests remain same-origin, signed and omit cookies", 
     }
     assert.equal(calls[0].options.method, "GET");
     assert.equal(calls[1].options.method, "GET");
-    assert.equal(calls[2].options.method, "POST");
-    assert.deepEqual(JSON.parse(calls[2].options.body), {
+    assert.equal(calls[2].options.method, "GET");
+    assert.equal(calls[3].options.method, "POST");
+    assert.deepEqual(JSON.parse(calls[3].options.body), {
       confirmation: "REJECT ALPHA-WATER"
     });
   } finally {

@@ -87,6 +87,44 @@ public sealed class DurableTelegramIntakeOptions
 public sealed class PostgresTelegramIntakeStore(
     string connectionString, DurableTelegramIntakeOptions config)
 {
+    // Server-limited, signed-operator readback. No raw group ID/chat hash
+    // or message bytes are exposed to the React operator UI.
+    public async Task<IReadOnlyList<TelegramIntakeSnapshot>> ListRecentAsync(
+        Guid tenantId, CancellationToken ct)
+    {
+        if (!config.Ready || tenantId == Guid.Empty)
+            throw new InvalidOperationException("Durable intake is not ready.");
+
+        await using var db = new NpgsqlConnection(connectionString);
+        await db.OpenAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        await using (var set = new NpgsqlCommand(
+            "SELECT set_config('residentchat.tenant_id', @tenant, true)", db, tx))
+        {
+            set.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenantId.ToString("D"));
+            await set.ExecuteNonQueryAsync(ct);
+        }
+
+        var snapshots = new List<TelegramIntakeSnapshot>();
+        await using (var query = new NpgsqlCommand("""
+            SELECT update_id, state, received_at
+            FROM residentchat.telegram_intake
+            WHERE tenant_id = @tenant
+            ORDER BY received_at DESC, update_id DESC
+            LIMIT 50
+            """, db, tx))
+        {
+            query.Parameters.AddWithValue("tenant", NpgsqlDbType.Uuid, tenantId);
+            await using var reader = await query.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                snapshots.Add(new TelegramIntakeSnapshot(
+                    reader.GetInt64(0), reader.GetInt16(1),
+                    new DateTimeOffset(reader.GetDateTime(2))));
+        }
+        await tx.CommitAsync(ct);
+        return snapshots;
+    }
+
     public async Task<bool> AcceptAsync(
         Guid tenantId, long telegramUpdateId, long groupId, CancellationToken ct)
     {
@@ -138,3 +176,6 @@ public sealed class PostgresTelegramIntakeStore(
         return added;
     }
 }
+
+public sealed record TelegramIntakeSnapshot(
+    long UpdateId, short State, DateTimeOffset ReceivedAt);

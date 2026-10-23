@@ -1,5 +1,5 @@
-import { parseProposals, parseTicket } from "./contracts.ts";
-import type { Proposal, TicketReadback } from "./contracts";
+import { parseProposals, parseTicket, parseIntake } from "./contracts.ts";
+import type { Proposal, TicketReadback, IntakeReceipt } from "./contracts";
 
 // A fictional short-lived lab JWT lives ONLY in JS module memory.
 // Never use cookie, localStorage, sessionStorage, URL, telemetry or logs.
@@ -69,4 +69,9 @@ export async function changeProposal(
 }
 export async function getTicket(id: string, signal?: AbortSignal): Promise<TicketReadback> {
   return parseTicket(await json("/operator/v1/tickets/" + encodeURIComponent(id), signal), id);
+}
+
+/** Read-only, signed and tenant-scoped. The endpoint exists only in test mode. */
+export async function getIntake(signal?: AbortSignal): Promise<IntakeReceipt[]> {
+  return parseIntake(await json("/operator/console/v1/intake", signal));
 }

@@ -71,3 +71,34 @@ export function parseTicket(data: unknown, expectedId: string): TicketReadback {
   if (!status) throw new Error("Невідомий стан заявки PostgreSQL");
   return { ticketId: x.ticketId, status, version: x.version };
 }
+
+/**
+ * Committed Telegram intake metadata, not a classified ticket.
+ * Server never exposes chat IDs, chat hashes, residents or message contents.
+ */
+export interface IntakeReceipt {
+  updateId: number;
+  state: 1 | 2 | 3;
+  receivedAt: string;
+}
+export function parseIntake(data: unknown): IntakeReceipt[] {
+  if (!Array.isArray(data) || data.length > 50)
+    throw new Error("Некоректна кількість Telegram-оновлень");
+  const seen = new Set<number>();
+  return data.map(value => {
+    const item = object(value);
+    if (typeof item.updateId !== "number" || !Number.isSafeInteger(item.updateId)
+      || item.updateId < 0 || seen.has(item.updateId)
+      || ![1, 2, 3].includes(item.state as number)
+      || typeof item.receivedAt !== "string" || item.receivedAt.length > 48
+      || !Number.isFinite(Date.parse(item.receivedAt))) {
+      throw new Error("Некоректні метадані Telegram від API");
+    }
+    seen.add(item.updateId);
+    return {
+      updateId: item.updateId,
+      state: item.state as 1 | 2 | 3,
+      receivedAt: item.receivedAt
+    };
+  });
+}

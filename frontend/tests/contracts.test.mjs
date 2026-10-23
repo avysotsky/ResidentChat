@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseProposals, parseTicket } from "../src/api/contracts.ts";
+import { parseProposals, parseTicket, parseIntake } from "../src/api/contracts.ts";
 
 const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const alpha = { caseId: "ALPHA-WATER", category: "Water", priority: "Urgent",
@@ -35,4 +35,15 @@ test("PG readback never accepts another ticket or unknown version/status", () =>
     { ticketId: id, status: 2, version: "1" },
     { ticketId: id, status: 2, version: 1.5 }
   ]) assert.throws(() => parseTicket(data, id));
+});
+
+test("read-only PostgreSQL Telegram intake validates bounded metadata", () => {
+  const row = { updateId: 92001, state: 1, receivedAt: "2026-10-23T09:00:00Z" };
+  assert.deepEqual(parseIntake([row]), [row]);
+  for (const unsafe of [
+    [row, row], [{...row, state: 9}], [{...row, updateId: -1}],
+    [{...row, updateId: Number.MAX_SAFE_INTEGER + 1}],
+    [{...row, receivedAt: "invalid"}],
+    Array.from({length: 51}, (_,i) => ({...row, updateId:i}))
+  ]) assert.throws(() => parseIntake(unsafe));
 });
