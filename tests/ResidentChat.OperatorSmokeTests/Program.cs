@@ -47,6 +47,37 @@ try
     }
     await SetupDatabaseAsync(adminConn!);
 
+    // RC-18: real text from a Telegram LAB Alpha update is handed to
+    // this isolated process only after Windows validates exact fixture.
+    // Unlike RC-17, the text bytes are decoded from a Windows-supplied
+    // UTF-8 transport payload, NOT reconstructed for webhook admission.
+    if (args.Length == 1 && args[0] == "--alpha-telegram-water-realtext")
+    {
+        Check(Environment.GetEnvironmentVariable("RC05_TEST_ISOLATED") == "1",
+            "RC-18 requires disposable PostgreSQL lab");
+        var idRaw = Environment.GetEnvironmentVariable("RC18_UPDATE_ID");
+        var textRaw = Environment.GetEnvironmentVariable("RC18_TEXT_B64");
+        Check(long.TryParse(idRaw, out var id) && id > 0
+            && id < long.MaxValue && !string.IsNullOrWhiteSpace(textRaw)
+            && textRaw.Length < 8192, "RC-18 bounded Telegram fixture input");
+        byte[] bytes = Convert.FromBase64String(textRaw!);
+        try
+        {
+            Check(bytes.Length < 256, "RC-18 text transport size cap");
+            string text = new UTF8Encoding(false, true).GetString(bytes);
+            Check(text == "У підвалі тече вода з труби"
+                && Encoding.UTF8.GetBytes(text).AsSpan().SequenceEqual(bytes),
+                "RC-18 only exact synthetic Alpha water case admitted");
+            await VerifyAlphaTelegramWaterAsync(adminConn!, appConn!, id, text);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+        Console.WriteLine("RC-18 REAL TELEGRAM TEXT + LOCAL QWEN + POSTGRESQL PASS");
+        return 0;
+    }
+
     // RC-17: accept ONLY the exact synthetic marker actually seen via
     // Windows DPAPI Telegram getUpdates. No raw update is sent to WSL.
     // This is one-shot HTTP admission, NOT deployment of Telegram polling.
@@ -425,6 +456,91 @@ catch (Exception error)
     return 1;
 }
 
+
+static async Task VerifyAlphaTelegramWaterAsync(
+    string adminConnection, string runtimeConnection, long updateId, string telegramText)
+{
+    // The authenticated Telegram call was made only on the owner's
+    // Windows PC. The actual text bytes are supplied from that response;
+    // only the known synthetic fixture can cross the Windows -> WSL boundary.
+    const long actualAlphaChatId = -5512397750L;
+    var webhook = JsonSerializer.Serialize(new {
+        update_id = updateId,
+        message = new {
+            chat = new { id = actualAlphaChatId, type = "group" },
+            text = telegramText
+        }
+    });
+    var ownJwt = Jwt(Tenant1, "operator", "rc18-alpha-water");
+    var otherJwt = Jwt(Tenant2, "operator", "rc18-beta-isolation");
+
+    async Task<long> Count(string table)
+    {
+        if (table is not ("telegram_intake" or "telegram_reviews"
+            or "operator_proposals" or "tickets" or "ticket_audit"))
+            throw new InvalidOperationException("RC18 invalid SQL table");
+        await using var conn = new NpgsqlConnection(adminConnection);
+        await conn.OpenAsync();
+        await using var query = new NpgsqlCommand(
+            "SELECT count(*) FROM residentchat." + table, conn);
+        return (long)(await query.ExecuteScalarAsync())!;
+    }
+
+    async Task AssertAck(HttpClient client, string status)
+    {
+        using var response = await PostWebhook(client, webhook);
+        Check(response.StatusCode == HttpStatusCode.OK
+            && (await response.Content.ReadAsStringAsync()).Contains(
+                "\"status\":\"" + status + "\"", StringComparison.Ordinal),
+            "RC18 operator server ACKs only committed or duplicate updates");
+    }
+
+    await using (var server = await StartAsync(runtimeConnection, true, true,
+        consoleEnabled: true, durableIntake: true, durableProposals: true,
+        encryptedReview: true, classifiedLive: true, actualAlphaOnly: true))
+    {
+        await AssertAck(server.Client, "accepted");
+        Check(await Count("telegram_intake") == 1
+            && await Count("operator_proposals") == 1
+            && await Count("telegram_reviews") == 0
+            && await Count("tickets") == 0
+            && await Count("ticket_audit") == 0,
+            "RC18 Qwen classifies actual Telegram water text into pending proposal only");
+        await AssertAck(server.Client, "duplicate");
+        Check(await Count("operator_proposals") == 1,
+            "RC18 duplicate does not create another proposal");
+
+        using var alpha = await Get(server.Client,
+            "/operator/console/v1/proposals", ownJwt);
+        using var beta = await Get(server.Client,
+            "/operator/console/v1/proposals", otherJwt);
+        using var anon = await Get(server.Client,
+            "/operator/console/v1/proposals", null);
+        Check(alpha.StatusCode == HttpStatusCode.OK
+            && beta.StatusCode == HttpStatusCode.OK
+            && anon.StatusCode == HttpStatusCode.Unauthorized,
+            "RC18 JWT-protected operator endpoint");
+
+        string ownJson = await alpha.Content.ReadAsStringAsync();
+        using var own = JsonDocument.Parse(ownJson);
+        using var other = JsonDocument.Parse(await beta.Content.ReadAsStringAsync());
+        Check(own.RootElement.GetArrayLength() == 1
+            && own.RootElement[0].GetProperty("state").GetString() == "Pending"
+            && other.RootElement.GetArrayLength() == 0
+            && !ownJson.Contains(telegramText, StringComparison.Ordinal),
+            "RC18 Alpha-only tenant scope, no raw message in proposal list");
+    }
+    await using (var restarted = await StartAsync(runtimeConnection, true, true,
+        consoleEnabled: true, durableIntake: true, durableProposals: true,
+        encryptedReview: true, classifiedLive: true, actualAlphaOnly: true))
+    {
+        await AssertAck(restarted.Client, "duplicate");
+    }
+    Check(await Count("telegram_intake") == 1
+        && await Count("operator_proposals") == 1
+        && await Count("tickets") == 0 && await Count("ticket_audit") == 0,
+        "RC18 durable idempotency after restart; no automatically created ticket");
+}
 
 static async Task VerifyAlphaTelegramProbeAsync(
     string adminConnection, string runtimeConnection, long updateId)
