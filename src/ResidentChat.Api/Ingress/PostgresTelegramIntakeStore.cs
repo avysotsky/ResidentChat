@@ -47,6 +47,11 @@ public sealed class DurableTelegramIntakeOptions
     {
         var section = config.GetSection("ResidentChat:DurableIntake");
         var enabled = section.GetValue<bool>("Enabled");
+        // This interim mode intentionally persists only metadata. It may ACK
+        // fictional test-group messages, but must never be mistaken for the
+        // future lossless resident-processing pipeline.
+        var metadataTestOnly = string.Equals(section["Mode"],
+            "metadata-only-test-groups", StringComparison.Ordinal);
         var hmacKey = section["ChatHashHmacKey"] ?? "";
         var groups = new Dictionary<long, Guid>();
         var valid = true;
@@ -64,7 +69,7 @@ public sealed class DurableTelegramIntakeOptions
 
         // No partial admission when one expected group lacks a tenant mapping
         // or when the operator database, signing/audit config, or webhook is bad.
-        var ready = enabled && valid && configured.Length > 0
+        var ready = enabled && metadataTestOnly && valid && configured.Length > 0
             && telegram.Ready && op.Ready && telegram.MatchesGroupSet(groups.Keys)
             && hmacKey.Length >= 32 && hmacKey.Length <= 512
             && Encoding.UTF8.GetByteCount(hmacKey) >= 32

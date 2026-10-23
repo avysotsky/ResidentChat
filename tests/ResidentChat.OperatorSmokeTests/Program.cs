@@ -640,6 +640,7 @@ static async Task<SyntheticServer> StartAsync(
         overrides["ResidentChat:Telegram:AllowedChatIds:0"] = AlphaChat.ToString();
         overrides["ResidentChat:Telegram:AllowedChatIds:1"] = BetaChat.ToString();
         overrides["ResidentChat:DurableIntake:Enabled"] = "true";
+        overrides["ResidentChat:DurableIntake:Mode"] = "metadata-only-test-groups";
         overrides["ResidentChat:DurableIntake:ChatHashHmacKey"] = SyntheticHmacKey;
         overrides["ResidentChat:DurableIntake:Groups:0:ChatId"] = AlphaChat.ToString();
         overrides["ResidentChat:DurableIntake:Groups:0:TenantId"] = Tenant1;

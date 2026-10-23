@@ -366,6 +366,7 @@ static void RunDurableIntakeConfigurationLab()
     var settings = new Dictionary<string, string?>
     {
         ["ResidentChat:DurableIntake:Enabled"] = "true",
+        ["ResidentChat:DurableIntake:Mode"] = "metadata-only-test-groups",
         ["ResidentChat:DurableIntake:ChatHashHmacKey"] =
             "RC10_DISTINCT_SYNTHETIC_CHAT_HMAC_0123456",
         ["ResidentChat:DurableIntake:Groups:0:ChatId"] = AllowedChat.ToString(),
@@ -378,6 +379,10 @@ static void RunDurableIntakeConfigurationLab()
             new ConfigurationBuilder().AddInMemoryCollection(settings).Build(),
             policy, options);
 
+    settings["ResidentChat:DurableIntake:Mode"] = "";
+    Check(!Config().Ready,
+        "RC-10 real resident mode must not ACK metadata-only messages");
+    settings["ResidentChat:DurableIntake:Mode"] = "metadata-only-test-groups";
     var good = Config();
     var pollConfig = new Dictionary<string, string?>
     {
