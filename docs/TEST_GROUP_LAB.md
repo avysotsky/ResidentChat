@@ -1,6 +1,6 @@
 # ResidentChat — Telegram synthetic lab (groups EXIST; bot connection NOT VERIFIED)
 
-Owner confirmed that all three private laboratory Telegram groups already exist (2026-10-23). Do **not** create duplicate groups. RC-13 actual local C#↔Qwen acceptance and RC-14 synthetic HTTP webhook↔PostgreSQL acceptance passed on their pinned SHAs. **Neither test accessed the real Telegram Bot API or these groups.** No production or resident data, external models, or deployment are authorized.
+Owner confirmed that all three private laboratory Telegram groups already exist (2026-10-23). Bot username created by owner: **`@residentchat_od_lab_bot`** (username only; token never shared or stored in Git). Local `getMe` authentication, webhook status, Privacy Mode and actual group membership have **not** been verified yet. Do **not** create duplicate groups. RC-13 actual local C#↔Qwen acceptance and RC-14 synthetic HTTP webhook↔PostgreSQL acceptance passed on their pinned SHAs. **Neither test accessed the real Telegram Bot API or these groups.** No production or resident data, external models, or deployment are authorized.
 
 ## Existing private test groups
 
