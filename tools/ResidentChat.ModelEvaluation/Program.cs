@@ -23,7 +23,7 @@ var fixtures = new (string Id, string Text, Func<ResidentDecision, DemoDispatchR
             && d.RequiresHuman && p.Queue == DemoQueueKind.TicketProposal
             && p.Proposal is { Priority: TicketPriority.Urgent,
                 RequiresHumanApproval: true }),
-    ("RU_ELEVATOR", "Второй лифт сломан, кабина пустая, людей внутри нет",
+    ("RU_ELEVATOR", "Второй лифт не работает, ждём мастера.",
         (d, p) => d.Valid && d.Intent == ResidentIntent.Maintenance
             && d.Category == "elevator" && d.Urgency == ResidentUrgency.Routine
             && p.Queue == DemoQueueKind.TicketProposal
