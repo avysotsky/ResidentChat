@@ -8,7 +8,7 @@ umask 077
  echo 'RC22_NOT_RUN=REQUIRES_PINNED_SHA_AND_NONROOT'; exit 2;
 }
 sha="$1"
-for tool in git docker flock tar mktemp openssl grep; do
+for tool in git docker flock tar mktemp openssl grep sha256sum cut; do
  command -v "$tool" >/dev/null || { echo 'RC22_NOT_RUN=UTILITY_MISSING'; exit 2; }
 done
 repo=/home/user/ResidentChatPRAutotest/source.git
@@ -115,6 +115,11 @@ for v in $versions; do
   echo 'RC22_STOP=PINNED_MIGRATION_NOT_FOUND'; exit 3;
  }
 done
+# Manifest hash pins the exact five migration sources used by this cluster.
+manifest="$(for v in $versions; do cat "$work/$v.sql"; done | sha256sum | cut -d' ' -f1)"
+[[ "$manifest" =~ ^[0-9a-f]{64}$ ]] || {
+ echo 'RC22_STOP=SCHEMA_DIGEST_INVALID'; exit 3;
+}
 if [[ "$created" == 1 ]]; then
  {
   echo 'BEGIN;'
@@ -122,11 +127,12 @@ if [[ "$created" == 1 ]]; then
   cat <<'SQL'
 CREATE TABLE residentchat.schema_bootstrap (
   version integer PRIMARY KEY CHECK (version=6),
+  manifest_sha256 char(64) NOT NULL CHECK (manifest_sha256 ~ '^[0-9a-f]{64}$'),
   installed_at timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO residentchat.schema_bootstrap(version) VALUES (6);
-COMMIT;
 SQL
+  printf "INSERT INTO residentchat.schema_bootstrap(version, manifest_sha256) VALUES (6, '%s');\n" "$manifest"
+  echo 'COMMIT;'
  } | pg >/dev/null || { echo 'RC22_STOP=MIGRATIONS_FAILED_DATA_UNTOUCHED_BY_CLEANUP'; exit 3; }
 
  # Only a synthetic lab runtime can connect; never use postgres for app.
@@ -150,16 +156,22 @@ GRANT SELECT, INSERT, UPDATE ON residentchat.telegram_poll_cursors TO residentch
 GRANT SELECT, INSERT ON residentchat.telegram_poll_blockers TO residentchat_lab_runtime;
 GRANT USAGE, SELECT ON SEQUENCE residentchat.ticket_audit_id_seq TO residentchat_lab_runtime;
 SQL
- } | pg >/dev/null || { echo 'RC22_STOP=LAB_ROLE_CREATION_FAILED'; exit 3; }
+ } | pg >/dev/null 2>&1 || { echo 'RC22_STOP=LAB_ROLE_CREATION_FAILED'; exit 3; }
  echo 'RC22_MIGRATIONS_APPLIED_ONCE=YES'
 else
  echo 'RC22_MIGRATIONS_NOT_REAPPLIED=YES'
 fi
-version="$(printf 'SELECT version FROM residentchat.schema_bootstrap;\n' | pg -t -A | tr -d '[:space:]')" || {
+version="$(printf 'SELECT version FROM residentchat.schema_bootstrap;\n' | pg | tr -d '[:space:]')" || {
  echo 'RC22_STOP=SCHEMA_LEDGER_MISSING'; exit 3;
 }
 [[ "$version" == 6 ]] || { echo 'RC22_STOP=SCHEMA_VERSION_NOT_EXPECTED'; exit 3; }
-safe_role="$(printf "SELECT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls FROM pg_roles WHERE rolname='residentchat_lab_runtime';\n" | pg -t -A | tr -d '[:space:]')" || {
+ledger_manifest="$(printf 'SELECT manifest_sha256 FROM residentchat.schema_bootstrap;\n' | pg | tr -d '[:space:]')" || {
+ echo 'RC22_STOP=MIGRATION_CHECKSUM_READ_ERROR'; exit 3;
+}
+[[ "$ledger_manifest" == "$manifest" ]] || {
+ echo 'RC22_STOP=MIGRATION_CHECKSUM_MISMATCH_DATA_UNCHANGED'; exit 3;
+}
+safe_role="$(printf "SELECT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls FROM pg_roles WHERE rolname='residentchat_lab_runtime';\n" | pg | tr -d '[:space:]')" || {
  echo 'RC22_STOP=RUNTIME_ROLE_MISSING'; exit 3;
 }
 [[ "$safe_role" == t ]] || { echo 'RC22_STOP=RUNTIME_ROLE_UNSAFE'; exit 3; }
