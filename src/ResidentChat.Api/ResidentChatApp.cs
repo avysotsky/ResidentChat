@@ -68,8 +68,12 @@ public static class ResidentChatApp
         // No Telegram outbound calls, local/remote AI calls, message storage or processing yet.
         app.MapPost("/telegram/webhook", async (HttpContext context,
             TelegramIngressPolicy ingress, BoundedUpdateDeduplicator dedup,
-            DurableTelegramIntakeOptions intake, PostgresTelegramIntakeStore store) =>
+            DurableTelegramIntakeOptions intake, PostgresTelegramIntakeStore store,
+            TelegramPollingOptions polling) =>
         {
+            // Never accept a webhook in a process configured for getUpdates,
+            // including incomplete polling config; fail closed to 404.
+            if (polling.Enabled) return Results.NotFound();
             if (!ingress.Enabled)
                 return Results.NotFound();
 

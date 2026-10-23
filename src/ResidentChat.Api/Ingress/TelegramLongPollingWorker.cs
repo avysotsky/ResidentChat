@@ -27,6 +27,10 @@ public sealed class TelegramPollingOptions
     {
         var section = config.GetSection("ResidentChat:TelegramPolling");
         var enabled = section.GetValue<bool>("Enabled");
+        // Transport is an explicit choice. Other configurations are unable
+        // to start getUpdates even if a bot token is accidentally present.
+        var isolatedTransport = string.Equals(section["Transport"],
+            "getUpdates-only", StringComparison.Ordinal);
         var token = section["BotToken"] ?? "";
         var colon = token.IndexOf(':');
         var validToken = colon >= 6 && colon < 16
@@ -35,7 +39,7 @@ public sealed class TelegramPollingOptions
             && token[(colon + 1)..].All(c =>
                 char.IsAsciiLetterOrDigit(c) || c is '_' or '-');
         return new TelegramPollingOptions(enabled,
-            enabled && intake.Ready && validToken, token);
+            enabled && isolatedTransport && intake.Ready && validToken, token);
     }
 }
 

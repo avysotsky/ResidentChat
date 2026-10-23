@@ -48,3 +48,14 @@ durable per-message classification/dispatch handoff (or an encrypted, short-live
 content queue with retention rules) **before offset ACK**, persisted operator
 proposals and an actual React queue. Do not silently clear/lose unprocessed
 resident messages.
+
+## Explicit single Telegram transport
+
+The separate `TelegramPolling:Transport=getUpdates-only` setting is required
+before the polling worker is considered ready. When
+`TelegramPolling:Enabled=true` the web API's `/telegram/webhook` route
+**always** returns 404, even if polling configuration is incomplete.
+The worker does not call `deleteWebhook`; removing any existing remote
+Telegram webhook must be an explicitly reviewed, separate operation
+for the dedicated test bot only. Never configure the same bot for two
+ResidentChat workers, and never share it with production.

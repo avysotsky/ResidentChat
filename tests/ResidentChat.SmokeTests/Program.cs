@@ -387,6 +387,7 @@ static void RunDurableIntakeConfigurationLab()
     var pollConfig = new Dictionary<string, string?>
     {
         ["ResidentChat:TelegramPolling:Enabled"] = "true",
+        ["ResidentChat:TelegramPolling:Transport"] = "getUpdates-only",
         ["ResidentChat:TelegramPolling:BotToken"] =
             "123456789:ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnop"
     };
@@ -394,6 +395,10 @@ static void RunDurableIntakeConfigurationLab()
         new ConfigurationBuilder().AddInMemoryCollection(pollConfig).Build(), good);
     Check(Poll().Enabled && Poll().Ready,
         "RC-10 correctly configured single Telegram polling source is ready");
+    pollConfig["ResidentChat:TelegramPolling:Transport"] = "";
+    Check(!Poll().Ready,
+        "RC-10 long polling refuses absent or ambiguous transport selection");
+    pollConfig["ResidentChat:TelegramPolling:Transport"] = "getUpdates-only";
     pollConfig["ResidentChat:TelegramPolling:BotToken"] = "not-a-bot-token";
     Check(!Poll().Ready, "RC-10 malformed Telegram bot token fails closed");
     pollConfig["ResidentChat:TelegramPolling:BotToken"] =
