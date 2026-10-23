@@ -54,6 +54,13 @@ public static class ResidentChatApp
         builder.Services.AddSingleton(sp => TelegramPollingOptions.Create(
             builder.Configuration, sp.GetRequiredService<DurableTelegramIntakeOptions>()));
         builder.Services.AddHostedService<TelegramLongPollingWorker>();
+
+        builder.Services.AddSingleton(sp => DurableProposalOptions.Create(
+            builder.Configuration, sp.GetRequiredService<OperatorOptions>(),
+            sp.GetRequiredService<DurableTelegramIntakeOptions>()));
+        builder.Services.AddSingleton(sp => new PostgresDurableProposalStore(
+            sp.GetRequiredService<OperatorOptions>().ConnectionString ?? "",
+            sp.GetRequiredService<DurableProposalOptions>()));
         builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Routing.EndpointMiddleware", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Http.Result", LogLevel.Warning);

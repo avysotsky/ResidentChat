@@ -89,6 +89,17 @@ public static class SyntheticConsoleApi
             if (!OperatorAccess.TryGetScope(ctx.User, options, out var tenant, out _))
                 return Results.Forbid();
 
+            var durableMode = ctx.RequestServices.GetRequiredService<DurableProposalOptions>();
+            if (durableMode.Enabled)
+            {
+                if (!durableMode.Ready) return Results.StatusCode(
+                    StatusCodes.Status503ServiceUnavailable);
+                var dbProposals = ctx.RequestServices
+                    .GetRequiredService<PostgresDurableProposalStore>();
+                SetNoStore(ctx);
+                return Results.Ok(await dbProposals.ListAsync(tenant, ctx.RequestAborted));
+            }
+
             var items = await inbox.GetAsync(tenant, options, ctx.RequestAborted);
             SetNoStore(ctx);
             return Results.Ok(items);
@@ -131,6 +142,39 @@ public static class SyntheticConsoleApi
 
         var (confirmation, error) = await ReadConfirmationAsync(ctx);
         if (error is not null) return error;
+
+        SetNoStore(ctx);
+        var durableMode = ctx.RequestServices.GetRequiredService<DurableProposalOptions>();
+        if (durableMode.Enabled)
+        {
+            if (!durableMode.Ready) return Results.StatusCode(
+                StatusCodes.Status503ServiceUnavailable);
+            var durableStore = ctx.RequestServices
+                .GetRequiredService<PostgresDurableProposalStore>();
+            try
+            {
+                var outcome = await durableStore.ChangeAsync(
+                    tenant, caseId, confirmation, approve, actor, ctx.RequestAborted);
+                return outcome switch
+                {
+                    DurableProposalChangeResult.Approved =>
+                        Results.Ok(new { status = "Approved" }),
+                    DurableProposalChangeResult.Rejected =>
+                        Results.Ok(new { status = "Rejected" }),
+                    DurableProposalChangeResult.Missing => Results.NotFound(),
+                    DurableProposalChangeResult.Invalid => Results.BadRequest(),
+                    _ => Results.Conflict(new { error = "already_processed" })
+                };
+            }
+            catch (Exception ex) when (ex is NpgsqlException or IOException
+                or TimeoutException or InvalidOperationException
+                or OperationCanceledException)
+            {
+                // The commit result may be ambiguous. No automatic POST retry;
+                // client may refresh the durable list for read-only reconciliation.
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+        }
 
         SetNoStore(ctx);
         var result = await inbox.ChangeAsync(tenant, options, caseId,
