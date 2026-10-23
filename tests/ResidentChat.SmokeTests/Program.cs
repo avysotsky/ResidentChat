@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using ResidentChat.Api;
 using ResidentChat.Api.Operator;
+using ResidentChat.Api.Ingress;
+using Microsoft.Extensions.Configuration;
 using ResidentChat.Core.Ingress;
 using ResidentChat.Core.LocalAi;
 using ResidentChat.Core.Knowledge;
@@ -166,6 +168,7 @@ try
         "approved card auto-fetches tenant-authorized ticket status inline and handles stale sessions");
     RunApprovedFaqPolicyLab();
     RunSyntheticDemoPolicyLab();
+    RunDurableIntakeConfigurationLab();
     RunSyntheticApprovalPolicyLab();
     await RunLocalModelSecurityLabAsync();
     Console.WriteLine("RC-01 PASS: synthetic policy + loopback HTTP admission/security checks.");
@@ -339,6 +342,62 @@ static async Task<LocalTestServer> StartAsync(bool enabled, bool configured,
     return new LocalTestServer(app, new HttpClient { BaseAddress = new Uri(url) });
 }
 
+
+static void RunDurableIntakeConfigurationLab()
+{
+    // No database, Telegram network, bot token, real chats or external AI.
+    // This checks that an explicitly requested live mode fails closed
+    // unless EVERY admitted group is mapped to a configured tenant.
+    var tenant = Guid.Parse("11111111-1111-4111-8111-111111111111");
+    var secondTenant = Guid.Parse("22222222-2222-4222-8222-222222222222");
+    var options = new OperatorOptions
+    {
+        Enabled = true,
+        Issuer = "residentchat.synthetic.test",
+        Audience = "residentchat.synthetic.operator",
+        JwtSigningKey = "RC10_DISTINCT_SYNTHETIC_JWT_KEY_0123456789",
+        AuditHmacKey = "RC10_DISTINCT_SYNTHETIC_AUDIT_KEY_01234567",
+        ConnectionString = "Host=/tmp/rc10-nonexistent;Database=synthetic;Username=synthetic",
+        AllowedTenantIds = new HashSet<Guid> { tenant, secondTenant }
+    };
+    Check(options.Ready, "RC-10 synthetic operator settings are valid");
+    var policy = new TelegramIngressPolicy(true, Secret,
+        [AllowedChat, ForeignChat]);
+    var settings = new Dictionary<string, string?>
+    {
+        ["ResidentChat:DurableIntake:Enabled"] = "true",
+        ["ResidentChat:DurableIntake:ChatHashHmacKey"] =
+            "RC10_DISTINCT_SYNTHETIC_CHAT_HMAC_0123456",
+        ["ResidentChat:DurableIntake:Groups:0:ChatId"] = AllowedChat.ToString(),
+        ["ResidentChat:DurableIntake:Groups:0:TenantId"] = tenant.ToString(),
+        ["ResidentChat:DurableIntake:Groups:1:ChatId"] = ForeignChat.ToString(),
+        ["ResidentChat:DurableIntake:Groups:1:TenantId"] = secondTenant.ToString()
+    };
+    DurableTelegramIntakeOptions Config() =>
+        DurableTelegramIntakeOptions.Create(
+            new ConfigurationBuilder().AddInMemoryCollection(settings).Build(),
+            policy, options);
+
+    var good = Config();
+    Check(good.Enabled && good.Ready
+        && good.TryResolveTenant(AllowedChat, out var alpha) && alpha == tenant
+        && good.TryResolveTenant(ForeignChat, out var beta) && beta == secondTenant
+        && !good.TryResolveTenant(-1005555555555, out _),
+        "explicit per-group trusted tenant scope accepted");
+    settings.Remove("ResidentChat:DurableIntake:Groups:1:ChatId");
+    Check(!Config().Ready, "missing group mapping fails closed");
+    settings["ResidentChat:DurableIntake:Groups:1:ChatId"] = ForeignChat.ToString();
+    settings["ResidentChat:DurableIntake:Groups:1:TenantId"] =
+        "33333333-3333-4333-8333-333333333333";
+    Check(!Config().Ready, "unconfigured tenant mapping fails closed");
+    settings["ResidentChat:DurableIntake:Groups:1:TenantId"] = secondTenant.ToString();
+    settings["ResidentChat:DurableIntake:ChatHashHmacKey"] = options.AuditHmacKey;
+    Check(!Config().Ready, "reused audit HMAC key fails closed");
+    settings["ResidentChat:DurableIntake:ChatHashHmacKey"] =
+        "RC10_DISTINCT_SYNTHETIC_CHAT_HMAC_0123456";
+    settings["ResidentChat:DurableIntake:Enabled"] = "false";
+    Check(!Config().Ready, "durable ingestion disabled by default");
+}
 
 static void RunApprovedFaqPolicyLab()
 {
