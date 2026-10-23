@@ -86,9 +86,9 @@ try {
     )
     $candidate = @($candidate | Sort-Object -Property UpdateId -Descending)
     if ($candidate.Count -eq 0) {
-        Write-Host 'RC18_PROBE_NOT_FOUND' -ForegroundColor Yellow
+        Write-Host 'RC18_WATER_MESSAGE_NOT_FOUND' -ForegroundColor Yellow
         Write-Host 'RC18_UPDATES_ACKED=NO'
-        Write-Host 'RC18_ACTION=POST_EXACT_TEST_MARKER_AGAIN'
+        Write-Host 'RC18_ACTION=SEND_EXACT_SYNTHETIC_WATER_TEXT_TO_ALPHA'
         return
     }
     $updateId = [long]$candidate[0].UpdateId
