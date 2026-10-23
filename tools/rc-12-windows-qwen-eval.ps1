@@ -17,8 +17,10 @@ function ContainsModel([object]$items) {
 }
 try {
  $v=Get-Local '/api/version'
- $installed=ContainsModel (Get-Local '/api/tags').models
- $loaded=ContainsModel (Get-Local '/api/ps').models
+ $tags=Get-Local '/api/tags'
+ $running=Get-Local '/api/ps'
+ $installed=ContainsModel $tags.models
+ $loaded=ContainsModel $running.models
  Write-Output ('RC-12 WINDOWS_OLLAMA_OK '+$v.version)
  Write-Output ('RC-12 INSTALLED_QWEN '+$(if($installed){'YES'}else{'NO'}))
  Write-Output ('RC-12 LOADED_QWEN '+$(if($loaded){'YES'}else{'NO'}))
