@@ -386,6 +386,7 @@ try
 
     await VerifyDurableTelegramIntakeAsync(adminConn!, appConn!);
     await VerifyDurableOperatorProposalsAsync(adminConn!, appConn!);
+    await VerifyEncryptedTelegramReviewAsync(adminConn!, appConn!);
 
     await VerifyRlsAsync(appConn!, Guid.Parse(Tenant1), Guid.Parse(Tenant2));
     Console.WriteLine("RC-02 PASS: JWT authorization, two-tenant HTTP isolation, PostgreSQL RLS and audit.");
@@ -398,6 +399,59 @@ catch (Exception error)
     return 1;
 }
 
+
+static async Task VerifyEncryptedTelegramReviewAsync(
+    string adminConnection, string runtimeConnection)
+{
+    const string secretText = "SYNTHETIC_ПРИВАТНИЙ_ТЕКСТ_777";
+    var alphaTenant = Guid.Parse(Tenant1);
+    await using (var server = await StartAsync(runtimeConnection, true, true,
+        consoleEnabled: true, durableIntake: true, durableProposals: true,
+        encryptedReview: true))
+    {
+        var reviews = server.GetRequiredService<PostgresTelegramReviewStore>();
+        Check(await reviews.AcceptForReviewAsync(alphaTenant, 94001, AlphaChat,
+            secretText, TelegramReviewReason.UncertainClassification,
+            CancellationToken.None), "encrypted review accepted");
+        Check(!await reviews.AcceptForReviewAsync(alphaTenant, 94001, AlphaChat,
+            secretText, TelegramReviewReason.UncertainClassification,
+            CancellationToken.None), "encrypted review duplicate is idempotent");
+        var own = await reviews.ListAsync(alphaTenant, CancellationToken.None);
+        var foreign = await reviews.ListAsync(Guid.Parse(Tenant2), CancellationToken.None);
+        Check(own.Count == 1 && own[0].UpdateId == 94001 && foreign.Count == 0,
+            "review list uses PostgreSQL tenant RLS");
+        var intake = server.GetRequiredService<PostgresTelegramIntakeStore>();
+        Check(await intake.IsAlreadyHandledAsync(alphaTenant, 94001, AlphaChat,
+            CancellationToken.None), "polling retry sees committed review before model");
+    }
+    await using (var db = new NpgsqlConnection(adminConnection))
+    {
+        await db.OpenAsync();
+        await using var cmd = new NpgsqlCommand("""
+            SELECT cipher, octet_length(nonce), octet_length(tag),
+                   expires_at > now()
+            FROM residentchat.telegram_reviews
+            WHERE tenant_id = @tenant AND update_id = 94001
+            """, db);
+        cmd.Parameters.AddWithValue("tenant", alphaTenant);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        Check(await reader.ReadAsync()
+            && !reader.GetFieldValue<byte[]>(0).AsSpan()
+                .SequenceEqual(Encoding.UTF8.GetBytes(secretText))
+            && reader.GetInt32(1) == 12 && reader.GetInt32(2) == 16
+            && reader.GetBoolean(3) && !await reader.ReadAsync(),
+            "AES-GCM ciphertext, nonce, tag and TTL persisted without raw text");
+    }
+    await using (var db = new NpgsqlConnection(runtimeConnection))
+    {
+        await db.OpenAsync();
+        await using var count = new NpgsqlCommand(
+            "SELECT count(*) FROM residentchat.telegram_reviews", db);
+        Check((long)(await count.ExecuteScalarAsync())! == 0,
+            "review table RLS denies unscoped connection");
+    }
+    Console.WriteLine("RC-10 ENCRYPTED REVIEW DB PASS: RLS, dedup, AES-GCM.");
+}
 
 static async Task VerifyDurableOperatorProposalsAsync(
     string adminConnection, string runtimeConnection)
@@ -793,6 +847,11 @@ static async Task SetupDatabaseAsync(string connection)
     await using (var cmd = new NpgsqlCommand(proposalMigration, db))
         await cmd.ExecuteNonQueryAsync();
 
+    var reviewMigration = await File.ReadAllTextAsync(
+        Path.Combine(AppContext.BaseDirectory, "migrations", "005_encrypted_telegram_reviews.sql"));
+    await using (var cmd = new NpgsqlCommand(reviewMigration, db))
+        await cmd.ExecuteNonQueryAsync();
+
     await using (var grant = new NpgsqlCommand("""
         DO $do$
         BEGIN
@@ -804,6 +863,7 @@ static async Task SetupDatabaseAsync(string connection)
         GRANT USAGE ON SCHEMA residentchat TO residentchat_synthetic_app;
         GRANT SELECT, INSERT, UPDATE ON residentchat.tickets TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.telegram_intake TO residentchat_synthetic_app;
+        GRANT SELECT, INSERT ON residentchat.telegram_reviews TO residentchat_synthetic_app;
         GRANT SELECT, INSERT, UPDATE ON residentchat.operator_proposals TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.operator_proposal_decisions TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.ticket_audit TO residentchat_synthetic_app;
@@ -877,7 +937,7 @@ static void Check(bool value, string label)
 static async Task<SyntheticServer> StartAsync(
     string connection, bool enabled, bool configured, bool consoleEnabled = false,
     bool durableIntake = false, bool badGroupMap = false,
-    bool durableProposals = false)
+    bool durableProposals = false, bool encryptedReview = false)
 {
     var overrides = new Dictionary<string, string?>
     {
@@ -911,6 +971,14 @@ static async Task<SyntheticServer> StartAsync(
     {
         overrides["ResidentChat:DurableProposals:Enabled"] = "true";
         overrides["ResidentChat:DurableProposals:Mode"] = "synthetic-postgres-only";
+    }
+    if (encryptedReview)
+    {
+        overrides["ResidentChat:TelegramReview:Enabled"] = "true";
+        overrides["ResidentChat:TelegramReview:Mode"] = "encrypted-test-groups-only";
+        overrides["ResidentChat:TelegramReview:EncryptionKeyBase64"] =
+            Convert.ToBase64String(Encoding.ASCII.GetBytes(
+                "0123456789ABCDEF0123456789ABCDEF"));
     }
     var app = ResidentChatApp.Build([], overrides);
     app.Urls.Add("http://127.0.0.1:0");

@@ -90,6 +90,51 @@ public sealed class PostgresTelegramIntakeStore(
     string connectionString, DurableTelegramIntakeOptions config)
 {
     /// <summary>
+    /// Early idempotency check. A previously admitted metadata row does NOT
+    /// count as handled unless an actionable proposal or an encrypted
+    /// human-review entry was committed in the same tenant and group.
+    /// </summary>
+    public async Task<bool> IsAlreadyHandledAsync(
+        Guid tenantId, long updateId, long chatId, CancellationToken ct)
+    {
+        if (!config.Ready || tenantId == Guid.Empty || updateId < 0
+            || !config.TryResolveTenant(chatId, out var trusted)
+            || trusted != tenantId)
+            throw new InvalidOperationException("Telegram scope not configured.");
+
+        var hash = HashChat(chatId);
+        await using var db = new NpgsqlConnection(connectionString);
+        await db.OpenAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        await using (var set = new NpgsqlCommand(
+            "SELECT set_config('residentchat.tenant_id', @tenant, true)", db, tx))
+        {
+            set.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenantId.ToString("D"));
+            await set.ExecuteNonQueryAsync(ct);
+        }
+        await using var query = new NpgsqlCommand("""
+            SELECT i.chat_hash,
+                   EXISTS (SELECT 1 FROM residentchat.operator_proposals p
+                           WHERE p.tenant_id = i.tenant_id
+                             AND p.source_update_id = i.update_id)
+                 OR EXISTS (SELECT 1 FROM residentchat.telegram_reviews r
+                            WHERE r.tenant_id = i.tenant_id
+                              AND r.update_id = i.update_id
+                              AND r.expires_at > now())
+            FROM residentchat.telegram_intake i
+            WHERE i.tenant_id = @tenant AND i.update_id = @update
+            """, db, tx);
+        query.Parameters.AddWithValue("tenant", NpgsqlDbType.Uuid, tenantId);
+        query.Parameters.AddWithValue("update", NpgsqlDbType.Bigint, updateId);
+        await using var reader = await query.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct)) return false;
+        if (!string.Equals(reader.GetString(0).TrimEnd(), hash,
+            StringComparison.Ordinal) || !reader.GetBoolean(1))
+            throw new InvalidOperationException("Inconsistent Telegram update state.");
+        return true;
+    }
+
+    /// <summary>
     /// Classification already completed locally; commit the admitted update
     /// and actionable human-approval proposal in ONE database transaction.
     /// If either insert fails, NO Telegram acknowledgement may occur.
@@ -174,7 +219,7 @@ public sealed class PostgresTelegramIntakeStore(
         return added;
     }
 
-    private string HashChat(long chatId)
+    internal string HashChat(long chatId)
     {
         var key = Encoding.UTF8.GetBytes(config.HmacKey);
         var input = Encoding.ASCII.GetBytes(

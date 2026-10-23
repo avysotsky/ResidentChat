@@ -391,20 +391,31 @@ static void RunDurableProposalConfigurationLab()
     config["ResidentChat:DurableProposals:Enabled"] = "true";
     config["ResidentChat:ClassifiedTelegram:Enabled"] = "true";
     config["ResidentChat:ClassifiedTelegram:Mode"] =
-        "maintenance-only-test-groups";
+        "maintenance-and-review-test-groups";
     config["ResidentChat:ClassifiedTelegram:OllamaEndpoint"] =
         "http://127.0.0.1:11434/api/generate";
     config["ResidentChat:ClassifiedTelegram:Model"] = "qwen3:1.7b";
+    config["ResidentChat:TelegramReview:Enabled"] = "true";
+    config["ResidentChat:TelegramReview:Mode"] = "encrypted-test-groups-only";
+    config["ResidentChat:TelegramReview:EncryptionKeyBase64"] =
+        Convert.ToBase64String(Encoding.ASCII.GetBytes(
+            "0123456789ABCDEF0123456789ABCDEF"));
     ClassifiedTelegramOptions Classified()
     {
         var source = new ConfigurationBuilder()
             .AddInMemoryCollection(config).Build();
         var intake = DurableTelegramIntakeOptions.Create(source, tg, op);
         var proposals = DurableProposalOptions.Create(source, op, intake);
-        return ClassifiedTelegramOptions.Create(source, intake, proposals);
+        var reviews = TelegramReviewOptions.Create(source, intake);
+        return ClassifiedTelegramOptions.Create(source, intake, proposals, reviews);
     }
 
     Check(Classified().Ready, "RC-10 explicit local-only Qwen test mode ready");
+    config["ResidentChat:TelegramReview:EncryptionKeyBase64"] = "invalid";
+    Check(!Classified().Ready, "RC-10 invalid review AES key fails closed");
+    config["ResidentChat:TelegramReview:EncryptionKeyBase64"] =
+        Convert.ToBase64String(Encoding.ASCII.GetBytes(
+            "0123456789ABCDEF0123456789ABCDEF"));
     config["ResidentChat:ClassifiedTelegram:OllamaEndpoint"] =
         "https://api.openai.com/api/generate";
     Check(!Classified().Ready,
@@ -415,7 +426,7 @@ static void RunDurableProposalConfigurationLab()
     Check(!Classified().Ready,
         "RC-10 resident-data processing never enabled by unreviewed config");
     config["ResidentChat:ClassifiedTelegram:Mode"] =
-        "maintenance-only-test-groups";
+        "maintenance-and-review-test-groups";
     config["ResidentChat:DurableProposals:Enabled"] = "false";
     Check(!Classified().Ready,
         "RC-10 cannot ACK classified Telegram without durable proposal table");

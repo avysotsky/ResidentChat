@@ -28,12 +28,13 @@ public sealed class ClassifiedTelegramOptions
     public string Model { get; }
 
     public static ClassifiedTelegramOptions Create(IConfiguration config,
-        DurableTelegramIntakeOptions intake, Operator.DurableProposalOptions proposals)
+        DurableTelegramIntakeOptions intake, Operator.DurableProposalOptions proposals,
+        TelegramReviewOptions reviews)
     {
         var section = config.GetSection("ResidentChat:ClassifiedTelegram");
         var enabled = section.GetValue<bool>("Enabled");
         var mode = string.Equals(section["Mode"],
-            "maintenance-only-test-groups", StringComparison.Ordinal);
+            "maintenance-and-review-test-groups", StringComparison.Ordinal);
         Uri? endpoint = Uri.TryCreate(section["OllamaEndpoint"],
             UriKind.Absolute, out var parsed) ? parsed : null;
         var model = section["Model"] ?? "";
@@ -41,7 +42,7 @@ public sealed class ClassifiedTelegramOptions
             && model.All(c => char.IsAsciiLetterOrDigit(c)
                 || c is '_' or '-' or '.' or ':' or '/');
         return new ClassifiedTelegramOptions(enabled,
-            enabled && mode && intake.Ready && proposals.Ready
+            enabled && mode && intake.Ready && proposals.Ready && reviews.Ready
             && LocalModelClassifier.IsApprovedEndpoint(endpoint) && safeModel,
             endpoint, model);
     }
@@ -56,7 +57,7 @@ public sealed class ClassifiedTelegramOptions
 /// </summary>
 public sealed class ClassifiedTelegramPipeline(
     ClassifiedTelegramOptions options, DurableTelegramIntakeOptions intake,
-    PostgresTelegramIntakeStore store)
+    PostgresTelegramIntakeStore store, PostgresTelegramReviewStore reviews)
 {
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
 
@@ -81,35 +82,56 @@ public sealed class ClassifiedTelegramPipeline(
     {
         if (!options.Ready || options.Endpoint is null
             || !intake.TryResolveTenant(groupId, out var expected)
-            || expected != tenantId)
-            throw new InvalidOperationException("Classified Telegram test intake disabled.");
-        if (string.IsNullOrWhiteSpace(text)
-            || text.Length > LocalModelClassifier.MaxMessageChars)
-            throw new InvalidOperationException("Telegram message cannot be classified.");
+            || expected != tenantId || !PostgresTelegramReviewStore.IsValidText(text))
+            throw new InvalidOperationException("Classified Telegram review intake disabled.");
 
-        // Bound Ollama load to one concurrent request on this application
-        // instance so it will not unexpectedly compete with TradeOps-v2.
+        // Serialize per process to cap local CPU load (TradeOps-v2 isolation).
         await _oneAtATime.WaitAsync(ct);
         try
         {
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            deadline.CancelAfter(TimeSpan.FromSeconds(15));
-            using var model = LocalModelClassifier.CreateLoopback(
-                options.Endpoint, options.Model);
-            var decision = await model.ClassifyAsync(text, deadline.Token);
-            var plan = DemoDispatchPolicy.Plan(tenantId, decision);
-            if (plan.Queue != DemoQueueKind.TicketProposal
-                || plan.Proposal is not { RequiresHumanApproval: true } proposal)
+            // Dedup comes BEFORE Ollama: no repeat CPU demand or conflicting
+            // classification if Telegram redelivers a committed message.
+            if (await store.IsAlreadyHandledAsync(tenantId, updateId, groupId, ct))
+                return false;
+
+            if (string.IsNullOrWhiteSpace(text)
+                || text.Length > LocalModelClassifier.MaxMessageChars)
+                return await reviews.AcceptForReviewAsync(tenantId, updateId,
+                    groupId, text, TelegramReviewReason.UnsupportedMessage, ct);
+
+            ResidentDecision decision;
+            try
             {
-                // FAQ, spam, emergency, ambiguity, unsafe model or timeout
-                // cannot be safely reduced to a maintenance ticket. Do not
-                // commit or acknowledge them until a review queue exists.
-                throw new InvalidOperationException(
-                    "Classification not eligible for maintenance proposal.");
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                deadline.CancelAfter(TimeSpan.FromSeconds(15));
+                using var model = LocalModelClassifier.CreateLoopback(
+                    options.Endpoint, options.Model);
+                decision = await model.ClassifyAsync(text, deadline.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // A timed-out local model must not block Telegram indefinitely.
+                return await reviews.AcceptForReviewAsync(tenantId, updateId,
+                    groupId, text, TelegramReviewReason.LocalModelUnavailable, ct);
             }
 
-            return await store.AcceptWithProposalAsync(tenantId, updateId,
-                groupId, proposal, ct);
+            var plan = DemoDispatchPolicy.Plan(tenantId, decision);
+            if (plan.Queue == DemoQueueKind.TicketProposal
+                && plan.Proposal is { RequiresHumanApproval: true } proposal)
+                return await store.AcceptWithProposalAsync(
+                    tenantId, updateId, groupId, proposal, ct);
+
+            var reason = decision.Intent is ResidentIntent.Emergency
+                    or ResidentIntent.Conflict
+                    || decision.Urgency == ResidentUrgency.Emergency
+                ? TelegramReviewReason.UrgentHumanSafety
+                : !decision.Valid
+                    ? TelegramReviewReason.UncertainClassification
+                    : plan.Queue == DemoQueueKind.OperatorReview
+                        ? TelegramReviewReason.UncertainClassification
+                        : TelegramReviewReason.NonMaintenance;
+            return await reviews.AcceptForReviewAsync(
+                tenantId, updateId, groupId, text, reason, ct);
         }
         finally
         {
