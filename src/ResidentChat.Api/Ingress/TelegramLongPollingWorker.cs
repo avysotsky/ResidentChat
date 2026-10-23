@@ -68,7 +68,6 @@ public static class TelegramPollingAckGuard
 public sealed class TelegramLongPollingWorker(
     TelegramPollingOptions options,
     DurableTelegramIntakeOptions intake,
-    PostgresTelegramIntakeStore store,
     TelegramIngressPolicy groupPolicy,
     ClassifiedTelegramOptions classified,
     ClassifiedTelegramPipeline pipeline) : BackgroundService
