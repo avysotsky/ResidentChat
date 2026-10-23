@@ -28,8 +28,13 @@ def win(path, raw=None, limit=8192, seconds=20):
     if raw is not None:
         cmd += ["-X", "POST", "-H", "Content-Type: application/json",
                 "--data-binary", "@-"]
-    p = subprocess.run(cmd, input=raw, stdout=subprocess.PIPE,
-                       stderr=subprocess.DEVNULL, timeout=seconds + 3)
+    # IMPORTANT: the containing Bash gate is streamed from 'git show | bash'.
+    # Inheriting stdin here would let Windows curl.exe consume the *rest*
+    # of that streamed shell script and make Bash exit early with code 0.
+    # Even for GET requests, supply an explicit EMPTY stdin pipe.
+    p = subprocess.run(cmd, input=raw if raw is not None else b"",
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                       timeout=seconds + 3)
     if p.returncode or not p.stdout or len(p.stdout) > limit:
         raise RuntimeError("Bounded Windows Ollama request failed")
     return p.stdout

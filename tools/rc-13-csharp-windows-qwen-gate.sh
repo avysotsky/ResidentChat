@@ -44,15 +44,20 @@ work="$(mktemp -d /tmp/rc13-csharp-qwen.XXXXXXXX)"
 src="$work/source"
 bridgepid=""
 owns_model=0
+completed=0
 cleanup() {
     result=$?
     trap - EXIT INT TERM
+    if [[ "$result" == 0 && "$completed" != 1 ]]; then
+        echo 'RC-13 FAIL: gate exited before actual C# classification completed' >&2
+        result=1
+    fi
     if [[ -n "$bridgepid" ]]; then
         kill "$bridgepid" >/dev/null 2>&1 || true
         wait "$bridgepid" >/dev/null 2>&1 || true
     fi
     if [[ "$owns_model" == 1 ]]; then
-        python3 "$src/tools/rc-13-windows-ollama-bridge.py" unload ||
+        python3 "$src/tools/rc-13-windows-ollama-bridge.py" unload </dev/null ||
             echo 'RC-13 CLEANUP WARNING: could not confirm release of model'
     fi
     rm -rf -- "$work"
@@ -79,7 +84,7 @@ test -f "$src/tools/ResidentChat.ModelEvaluation/Program.cs" || {
 }
 
 echo 'RC-13 STEP 1: check existing Windows-local Ollama via Windows curl.exe'
-state="$(python3 "$src/tools/rc-13-windows-ollama-bridge.py" state)" || {
+state="$(python3 "$src/tools/rc-13-windows-ollama-bridge.py" state </dev/null)" || {
     echo 'RC-13 NOT_RUN: Windows Ollama or WSL Windows interop unavailable'
     exit 2
 }
@@ -117,7 +122,7 @@ test -s "$src/.rc13-eval/ResidentChat.ModelEvaluation.dll" || {
 if [[ "$state" == "notloaded" ]]; then
     owns_model=1
     echo 'RC-13 STEP 3: load only existing Qwen model for synthetic run'
-    python3 "$src/tools/rc-13-windows-ollama-bridge.py" warmup || {
+    python3 "$src/tools/rc-13-windows-ollama-bridge.py" warmup </dev/null || {
         echo 'RC-13 NOT_RUN: local Qwen warmup failed'
         exit 2
     }
@@ -127,7 +132,7 @@ fi
 
 echo 'RC-13 STEP 4: temporary WSL localhost-only JSON bridge'
 python3 "$src/tools/rc-13-windows-ollama-bridge.py" serve \
-    >"$work/bridge.log" 2>&1 &
+    </dev/null >"$work/bridge.log" 2>&1 &
 bridgepid=$!
 ready=0
 for ((attempt=0;attempt<40;attempt++)); do
@@ -153,5 +158,6 @@ timeout 150 docker run --rm --pull never --network host --read-only \
     -e DOTNET_CLI_HOME=/tmp/dotnet-home \
     -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     "$sdk" dotnet /app/ResidentChat.ModelEvaluation.dll --synthetic-loaded-model
+completed=1
 echo "RC-13 CSHARP + LIVE LOCAL QWEN PASS sha=$sha"
 echo 'RC-13 LIMIT: six fictional examples; Telegram/database/browser not exercised'
