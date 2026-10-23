@@ -10,6 +10,7 @@ using Npgsql;
 using ResidentChat.Api;
 using ResidentChat.Core.Tickets;
 using ResidentChat.Api.Operator;
+using ResidentChat.Api.Ingress;
 using ResidentChat.Core.Demo;
 using ResidentChat.Core.LocalAi;
 
@@ -562,6 +563,57 @@ static async Task VerifyDurableOperatorProposalsAsync(
             Check((long)(await count.ExecuteScalarAsync())! == 1,
                 "RLS SQL directly hides Beta proposal from Alpha");
         await tx.RollbackAsync();
+    }
+
+    // New RC-10 Qwen-eligible path: simulated C# classified decision,
+    // then one atomic real PG transaction (Telegram intake + proposal).
+    // This does NOT require a live Ollama or consume any real chats.
+    await using (var classifiedServer = await StartAsync(runtimeConnection, true, true,
+        consoleEnabled: true, durableIntake: true, durableProposals: true))
+    {
+        var classifierResult = DemoDispatchPolicy.Plan(tenantA,
+            new ResidentDecision(true, ResidentIntent.Maintenance,
+                "water", ResidentUrgency.Urgent, true));
+        Check(classifierResult is { Queue: DemoQueueKind.TicketProposal,
+                Proposal: not null },
+            "guarded Qwen category must map only to human-approved proposal");
+
+        var atomic = classifiedServer.GetRequiredService<PostgresTelegramIntakeStore>();
+        var proposal = classifierResult.Proposal!;
+        Check(await atomic.AcceptWithProposalAsync(tenantA, 93001, AlphaChat,
+            proposal, CancellationToken.None),
+            "atomic accepted Telegram intake and human proposal committed");
+        Check(!await atomic.AcceptWithProposalAsync(tenantA, 93001, AlphaChat,
+            proposal, CancellationToken.None),
+            "duplicate Telegram delivery finds matching committed proposal");
+        Check(await AdminCount("operator_proposals") == 3,
+            "atomic intake committed exactly one new pending proposal");
+        using var pendingQueue = await Get(classifiedServer.Client, proposalPath, alphaJwt);
+        using var pendingJson = JsonDocument.Parse(
+            await pendingQueue.Content.ReadAsStringAsync());
+        Check(pendingQueue.StatusCode == HttpStatusCode.OK
+            && pendingJson.RootElement.GetArrayLength() == 2
+            && pendingJson.RootElement.EnumerateArray().Any(
+                e => e.GetProperty("state").GetString() == "Pending"),
+            "newly classified Telegram maintenance appears as actionable pending React item");
+        using var wrongTenant = await Get(classifiedServer.Client, proposalPath, betaJwt);
+        using var wrongJson = JsonDocument.Parse(await wrongTenant.Content.ReadAsStringAsync());
+        Check(wrongJson.RootElement.GetArrayLength() == 1,
+            "the atomic admission is not visible to another building");
+    }
+
+    // Verify durable intake and its generated proposal are inseparable.
+    await using (var verifier = new NpgsqlConnection(adminConnection))
+    {
+        await verifier.OpenAsync();
+        await using var count = new NpgsqlCommand("""
+            SELECT count(*) FROM residentchat.telegram_intake i
+            JOIN residentchat.operator_proposals p
+              ON p.tenant_id = i.tenant_id AND p.source_update_id = i.update_id
+            WHERE i.update_id = 93001
+            """, verifier);
+        Check((long)(await count.ExecuteScalarAsync())! == 1,
+            "real PostgreSQL transaction persisted intake and classification together");
     }
     Console.WriteLine("RC-10 DURABLE PG PASS: approval, reject, restart, JWT, RLS and atomic audit.");
 }
