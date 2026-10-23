@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using ResidentChat.Api;
 using ResidentChat.Api.Operator;
 using ResidentChat.Api.Ingress;
+using ResidentChat.Api.Ingress;
 using Microsoft.Extensions.Configuration;
 using ResidentChat.Core.Ingress;
 using ResidentChat.Core.LocalAi;
@@ -169,6 +170,7 @@ try
     RunApprovedFaqPolicyLab();
     RunSyntheticDemoPolicyLab();
     RunDurableIntakeConfigurationLab();
+    RunDurableProposalConfigurationLab();
     RunSyntheticApprovalPolicyLab();
     await RunLocalModelSecurityLabAsync();
     Console.WriteLine("RC-01 PASS: synthetic policy + loopback HTTP admission/security checks.");
@@ -342,6 +344,52 @@ static async Task<LocalTestServer> StartAsync(bool enabled, bool configured,
     return new LocalTestServer(app, new HttpClient { BaseAddress = new Uri(url) });
 }
 
+
+static void RunDurableProposalConfigurationLab()
+{
+    const string tenantText = "11111111-1111-4111-8111-111111111111";
+    var tenant = Guid.Parse(tenantText);
+    var op = new OperatorOptions {
+        Enabled = true,
+        Issuer = "synthetic-proposals",
+        Audience = "synthetic-dispatch",
+        JwtSigningKey = "SYNTHETIC_PROPOSALS_SIGNING_KEY_0123456",
+        AuditHmacKey = "SYNTHETIC_PROPOSALS_AUDIT_KEY_012345678",
+        ConnectionString = "Host=/tmp/synthetic-nonexistent;Database=synthetic",
+        AllowedTenantIds = new HashSet<Guid> { tenant }
+    };
+    var tg = new TelegramIngressPolicy(true, Secret, [AllowedChat]);
+    var config = new Dictionary<string, string?> {
+        ["ResidentChat:DurableIntake:Enabled"] = "true",
+        ["ResidentChat:DurableIntake:Mode"] = "metadata-only-test-groups",
+        ["ResidentChat:DurableIntake:ChatHashHmacKey"] =
+            "SYNTHETIC_PROPOSALS_CHAT_HMAC_KEY_0123456",
+        ["ResidentChat:DurableIntake:Groups:0:ChatId"] = AllowedChat.ToString(),
+        ["ResidentChat:DurableIntake:Groups:0:TenantId"] = tenantText,
+        ["ResidentChat:DurableProposals:Enabled"] = "true",
+        ["ResidentChat:DurableProposals:Mode"] = "synthetic-postgres-only"
+    };
+    DurableProposalOptions Current()
+    {
+        var source = new ConfigurationBuilder().AddInMemoryCollection(config).Build();
+        var intake = DurableTelegramIntakeOptions.Create(source, tg, op);
+        return DurableProposalOptions.Create(source, op, intake);
+    }
+    Check(op.Ready && Current().Ready,
+        "RC-10 explicit durable proposal lab is ready with trusted tenants");
+    config["ResidentChat:DurableProposals:Mode"] = "production";
+    Check(Current().Enabled && !Current().Ready,
+        "RC-10 unapproved real-resident mode fails closed");
+    config["ResidentChat:DurableProposals:Mode"] = "synthetic-postgres-only";
+    config["ResidentChat:DurableProposals:Enabled"] = "false";
+    Check(!Current().Enabled && !Current().Ready,
+        "RC-10 proposal persistence disabled without exact opt-in");
+    Check(PostgresDurableProposalStore.TryParseCaseId(
+        "RC-11111111111141118111111111111111", out _)
+        && !PostgresDurableProposalStore.TryParseCaseId(
+            "RC-../../tickets", out _),
+        "RC-10 case-id parsing never accepts a forged HTTP route");
+}
 
 static void RunDurableIntakeConfigurationLab()
 {

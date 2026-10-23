@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using ResidentChat.Api;
 using ResidentChat.Core.Tickets;
+using ResidentChat.Api.Operator;
 using ResidentChat.Core.Demo;
 using ResidentChat.Core.LocalAi;
 
@@ -383,6 +384,7 @@ try
     }
 
     await VerifyDurableTelegramIntakeAsync(adminConn!, appConn!);
+    await VerifyDurableOperatorProposalsAsync(adminConn!, appConn!);
 
     await VerifyRlsAsync(appConn!, Guid.Parse(Tenant1), Guid.Parse(Tenant2));
     Console.WriteLine("RC-02 PASS: JWT authorization, two-tenant HTTP isolation, PostgreSQL RLS and audit.");
@@ -395,6 +397,174 @@ catch (Exception error)
     return 1;
 }
 
+
+static async Task VerifyDurableOperatorProposalsAsync(
+    string adminConnection, string runtimeConnection)
+{
+    const string proposalPath = "/operator/console/v1/proposals";
+    var tenantA = Guid.Parse(Tenant1);
+    var tenantB = Guid.Parse(Tenant2);
+    var alphaJwt = Jwt(Tenant1, "operator", "synthetic-db-proposal-alpha");
+    var betaJwt = Jwt(Tenant2, "operator", "synthetic-db-proposal-beta");
+
+    async Task<long> AdminCount(string table)
+    {
+        // Only literal locally authored table identifiers passed to this helper.
+        if (table is not ("operator_proposals" or "operator_proposal_decisions"
+            or "tickets" or "ticket_audit"))
+            throw new InvalidOperationException("Unknown test table");
+        await using var db = new NpgsqlConnection(adminConnection);
+        await db.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            "SELECT count(*) FROM residentchat." + table, db);
+        return (long)(await cmd.ExecuteScalarAsync())!;
+    }
+
+    var ticketsBefore = await AdminCount("tickets");
+    var auditBefore = await AdminCount("ticket_audit");
+    await using (var server = await StartAsync(runtimeConnection, true, true,
+        consoleEnabled: true, durableIntake: true, durableProposals: true))
+    {
+        var backend = server.GetRequiredService<PostgresDurableProposalStore>();
+        using var initiallyEmpty = await Get(server.Client, proposalPath, alphaJwt);
+        Check(initiallyEmpty.StatusCode == HttpStatusCode.OK
+            && (await initiallyEmpty.Content.ReadAsStringAsync()).Trim() == "[]",
+            "RC-10 durable mode never returns fictional in-memory queue");
+        Check(await backend.CreateFromClassifiedAsync(tenantA, 900000,
+            TicketCategory.Water, TicketPriority.Urgent, CancellationToken.None) is null,
+            "classification cannot create a proposal without admitted Telegram metadata");
+        Check(await backend.CreateFromClassifiedAsync(tenantB, 92001,
+            TicketCategory.Water, TicketPriority.Urgent, CancellationToken.None) is null,
+            "other tenant cannot propose from an ALPHA Telegram update");
+
+        var alphaId = await backend.CreateFromClassifiedAsync(tenantA, 92001,
+            TicketCategory.Water, TicketPriority.Urgent, CancellationToken.None);
+        var betaId = await backend.CreateFromClassifiedAsync(tenantB, 92002,
+            TicketCategory.Elevator, TicketPriority.Routine, CancellationToken.None);
+        Check(alphaId.HasValue && betaId.HasValue,
+            "independent trusted synthetic classification persists both tenant proposals");
+        Check(await backend.CreateFromClassifiedAsync(tenantA, 92001,
+            TicketCategory.Water, TicketPriority.Urgent, CancellationToken.None) is null,
+            "classification is idempotent per admitted update");
+        var alphaCase = PostgresDurableProposalStore.CaseId(alphaId!.Value);
+        var betaCase = PostgresDurableProposalStore.CaseId(betaId!.Value);
+        using var alphaQueue = await Get(server.Client, proposalPath, alphaJwt);
+        using var betaQueue = await Get(server.Client, proposalPath, betaJwt);
+        using var alphaJson = JsonDocument.Parse(await alphaQueue.Content.ReadAsStringAsync());
+        using var betaJson = JsonDocument.Parse(await betaQueue.Content.ReadAsStringAsync());
+        Check(alphaQueue.StatusCode == HttpStatusCode.OK
+            && betaQueue.StatusCode == HttpStatusCode.OK
+            && alphaJson.RootElement.GetArrayLength() == 1
+            && betaJson.RootElement.GetArrayLength() == 1
+            && alphaJson.RootElement[0].GetProperty("caseId").GetString() == alphaCase
+            && betaJson.RootElement[0].GetProperty("caseId").GetString() == betaCase
+            && alphaJson.RootElement[0].GetProperty("state").GetString() == "Pending",
+            "React queue is real PostgreSQL and isolated by signed JWT tenant");
+        using var anonymous = await Get(server.Client, proposalPath, null);
+        Check(anonymous.StatusCode == HttpStatusCode.Unauthorized,
+            "durable proposal queue requires a signed JWT");
+
+        var alphaApprove = proposalPath + "/" + alphaCase + "/approve";
+        using var wrongTenant = await Post(server.Client, alphaApprove,
+            JsonSerializer.Serialize(new { confirmation = "APPROVE " + alphaCase }),
+            betaJwt);
+        Check(wrongTenant.StatusCode == HttpStatusCode.NotFound,
+            "foreign tenant cannot approve another tenant's proposal");
+        using var wrongConfirmation = await Post(server.Client, alphaApprove,
+            JsonSerializer.Serialize(new { confirmation = "APPROVE " + betaCase }),
+            alphaJwt);
+        Check(wrongConfirmation.StatusCode == HttpStatusCode.BadRequest,
+            "wrong exact confirmation cannot mutate a proposal");
+        Check(await AdminCount("tickets") == ticketsBefore,
+            "unapproved proposals must not create tickets");
+
+        using var approved = await Post(server.Client, alphaApprove,
+            JsonSerializer.Serialize(new { confirmation = "APPROVE " + alphaCase }),
+            alphaJwt);
+        Check(approved.StatusCode == HttpStatusCode.OK,
+            "exact Alpha approval atomically commits real ticket and decision");
+        using var repeated = await Post(server.Client, alphaApprove,
+            JsonSerializer.Serialize(new { confirmation = "APPROVE " + alphaCase }),
+            alphaJwt);
+        Check(repeated.StatusCode == HttpStatusCode.Conflict,
+            "repeated Alpha approval cannot insert a second ticket");
+        using var rejected = await Post(server.Client,
+            proposalPath + "/" + betaCase + "/reject",
+            JsonSerializer.Serialize(new { confirmation = "REJECT " + betaCase }),
+            betaJwt);
+        Check(rejected.StatusCode == HttpStatusCode.OK,
+            "Beta rejection commits a decision without ticket");
+        using var rejectedApprove = await Post(server.Client,
+            proposalPath + "/" + betaCase + "/approve",
+            JsonSerializer.Serialize(new { confirmation = "APPROVE " + betaCase }),
+            betaJwt);
+        Check(rejectedApprove.StatusCode == HttpStatusCode.Conflict,
+            "rejected Beta proposal cannot be approved afterward");
+
+        Check(await AdminCount("tickets") == ticketsBefore + 1
+            && await AdminCount("ticket_audit") == auditBefore + 1
+            && await AdminCount("operator_proposals") == 2
+            && await AdminCount("operator_proposal_decisions") == 2,
+            "two human decisions produce exactly one ticket and atomic audit");
+
+        using var updated = await Get(server.Client, proposalPath, alphaJwt);
+        using var updatedJson = JsonDocument.Parse(await updated.Content.ReadAsStringAsync());
+        var committed = updatedJson.RootElement[0];
+        var ticketId = committed.GetProperty("ticketId").GetGuid();
+        Check(committed.GetProperty("state").GetString() == "Approved"
+            && ticketId != Guid.Empty,
+            "approved proposal references its durable PostgreSQL ticket");
+        using var readback = await Get(server.Client,
+            "/operator/v1/tickets/" + ticketId, alphaJwt);
+        using var readbackJson = JsonDocument.Parse(
+            await readback.Content.ReadAsStringAsync());
+        Check(readback.StatusCode == HttpStatusCode.OK
+            && readbackJson.RootElement.GetProperty("status").GetInt32()
+                == (int)TicketStatus.Escalated
+            && readbackJson.RootElement.GetProperty("version").GetInt32() == 1,
+            "React ticket readback reports committed Urgent/Escalated version 1");
+        using var foreignRead = await Get(server.Client,
+            "/operator/v1/tickets/" + ticketId, betaJwt);
+        Check(foreignRead.StatusCode == HttpStatusCode.NotFound,
+            "tenant isolation applies to approved PostgreSQL ticket too");
+    }
+
+    // In-memory locks are gone: proposal decisions survive actual API restart.
+    await using (var restarted = await StartAsync(runtimeConnection, true, true,
+        consoleEnabled: true, durableIntake: true, durableProposals: true))
+    {
+        using var a = await Get(restarted.Client, proposalPath, alphaJwt);
+        using var b = await Get(restarted.Client, proposalPath, betaJwt);
+        var textA = await a.Content.ReadAsStringAsync();
+        var textB = await b.Content.ReadAsStringAsync();
+        Check(textA.Contains("\"Approved\"", StringComparison.Ordinal)
+            && textB.Contains("\"Rejected\"", StringComparison.Ordinal)
+            && !textA.Contains("\"ALPHA-WATER\"", StringComparison.Ordinal),
+            "database-proposal lifecycle persists across process restart");
+    }
+
+    await using (var db = new NpgsqlConnection(runtimeConnection))
+    {
+        await db.OpenAsync();
+        await using (var deny = new NpgsqlCommand(
+            "SELECT count(*) FROM residentchat.operator_proposals", db))
+            Check((long)(await deny.ExecuteScalarAsync())! == 0,
+                "proposal PostgreSQL RLS default denies missing tenant");
+        await using var tx = await db.BeginTransactionAsync();
+        await using (var set = new NpgsqlCommand(
+            "SELECT set_config('residentchat.tenant_id', @tenant, true)", db, tx))
+        {
+            set.Parameters.AddWithValue("tenant", Tenant1);
+            await set.ExecuteNonQueryAsync();
+        }
+        await using (var count = new NpgsqlCommand(
+            "SELECT count(*) FROM residentchat.operator_proposals", db, tx))
+            Check((long)(await count.ExecuteScalarAsync())! == 1,
+                "RLS SQL directly hides Beta proposal from Alpha");
+        await tx.RollbackAsync();
+    }
+    Console.WriteLine("RC-10 DURABLE PG PASS: approval, reject, restart, JWT, RLS and atomic audit.");
+}
 
 static async Task VerifyDurableTelegramIntakeAsync(
     string adminConnection, string runtimeConnection)
@@ -566,6 +736,11 @@ static async Task SetupDatabaseAsync(string connection)
     await using (var cmd = new NpgsqlCommand(intakeMigration, db))
         await cmd.ExecuteNonQueryAsync();
 
+    var proposalMigration = await File.ReadAllTextAsync(
+        Path.Combine(AppContext.BaseDirectory, "migrations", "004_operator_proposals.sql"));
+    await using (var cmd = new NpgsqlCommand(proposalMigration, db))
+        await cmd.ExecuteNonQueryAsync();
+
     await using (var grant = new NpgsqlCommand("""
         DO $do$
         BEGIN
@@ -577,6 +752,8 @@ static async Task SetupDatabaseAsync(string connection)
         GRANT USAGE ON SCHEMA residentchat TO residentchat_synthetic_app;
         GRANT SELECT, INSERT, UPDATE ON residentchat.tickets TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.telegram_intake TO residentchat_synthetic_app;
+        GRANT SELECT, INSERT, UPDATE ON residentchat.operator_proposals TO residentchat_synthetic_app;
+        GRANT SELECT, INSERT ON residentchat.operator_proposal_decisions TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.ticket_audit TO residentchat_synthetic_app;
         GRANT USAGE, SELECT ON SEQUENCE residentchat.ticket_audit_id_seq
             TO residentchat_synthetic_app;
@@ -647,7 +824,8 @@ static void Check(bool value, string label)
 
 static async Task<SyntheticServer> StartAsync(
     string connection, bool enabled, bool configured, bool consoleEnabled = false,
-    bool durableIntake = false, bool badGroupMap = false)
+    bool durableIntake = false, bool badGroupMap = false,
+    bool durableProposals = false)
 {
     var overrides = new Dictionary<string, string?>
     {
@@ -677,6 +855,11 @@ static async Task<SyntheticServer> StartAsync(
         overrides["ResidentChat:DurableIntake:Groups:1:TenantId"] =
             badGroupMap ? Outsider : Tenant2;
     }
+    if (durableProposals)
+    {
+        overrides["ResidentChat:DurableProposals:Enabled"] = "true";
+        overrides["ResidentChat:DurableProposals:Mode"] = "synthetic-postgres-only";
+    }
     var app = ResidentChatApp.Build([], overrides);
     app.Urls.Add("http://127.0.0.1:0");
     await app.StartAsync();
@@ -692,6 +875,7 @@ static async Task<SyntheticServer> StartAsync(
 internal sealed class SyntheticServer(WebApplication app, HttpClient client) : IAsyncDisposable
 {
     public HttpClient Client { get; } = client;
+    public T GetRequiredService<T>() where T : notnull => app.Services.GetRequiredService<T>();
     public async ValueTask DisposeAsync()
     {
         Client.Dispose();
