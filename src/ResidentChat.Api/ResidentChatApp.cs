@@ -48,6 +48,12 @@ public static class ResidentChatApp
         builder.Services.AddSingleton(sp => new PostgresTelegramIntakeStore(
             sp.GetRequiredService<OperatorOptions>().ConnectionString ?? "",
             sp.GetRequiredService<DurableTelegramIntakeOptions>()));
+
+        // The PC does not expose a public webhook when optional long polling
+        // is chosen. Both live intake and polling stay DISABLED by default.
+        builder.Services.AddSingleton(sp => TelegramPollingOptions.Create(
+            builder.Configuration, sp.GetRequiredService<DurableTelegramIntakeOptions>()));
+        builder.Services.AddHostedService<TelegramLongPollingWorker>();
         builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Routing.EndpointMiddleware", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Http.Result", LogLevel.Warning);
