@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using ResidentChat.Core.Ingress;
+using ResidentChat.Api.Ingress;
+using Npgsql;
 using ResidentChat.Api.Operator;
 
 namespace ResidentChat.Api;
@@ -38,6 +40,14 @@ public static class ResidentChatApp
         // No external AI providers or message-forwarding dependencies are registered.
         OperatorApi.Register(builder);
         SyntheticConsoleApi.Register(builder);
+
+        // RC-10: never enabled implicitly. Durable intake is tenant-bound
+        // to the validated operator PostgreSQL role/configuration.
+        builder.Services.AddSingleton(sp => DurableTelegramIntakeOptions.Create(
+            builder.Configuration, policy, sp.GetRequiredService<OperatorOptions>()));
+        builder.Services.AddSingleton(sp => new PostgresTelegramIntakeStore(
+            sp.GetRequiredService<OperatorOptions>().ConnectionString ?? "",
+            sp.GetRequiredService<DurableTelegramIntakeOptions>()));
         builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Routing.EndpointMiddleware", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Http.Result", LogLevel.Warning);
@@ -51,12 +61,18 @@ public static class ResidentChatApp
 
         // No Telegram outbound calls, local/remote AI calls, message storage or processing yet.
         app.MapPost("/telegram/webhook", async (HttpContext context,
-            TelegramIngressPolicy ingress, BoundedUpdateDeduplicator dedup) =>
+            TelegramIngressPolicy ingress, BoundedUpdateDeduplicator dedup,
+            DurableTelegramIntakeOptions intake, PostgresTelegramIntakeStore store) =>
         {
             if (!ingress.Enabled)
                 return Results.NotFound();
 
             if (!ingress.Ready)
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+
+            // Explicit opt-in with incomplete tenant, database or HMAC config
+            // must not silently fall back to the volatile demo deduplicator.
+            if (intake.Enabled && !intake.Ready)
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
 
             if (!context.Request.Headers.TryGetValue(SecretHeader, out var values)
@@ -109,6 +125,29 @@ public static class ResidentChatApp
             if (parsed.Kind != TelegramParseKind.GroupMessage
                 || !ingress.IsAllowedGroup(parsed.ChatId))
                 return Results.Ok(new { status = "ignored" });
+
+            if (intake.Enabled)
+            {
+                if (!intake.TryResolveTenant(parsed.ChatId, out var tenantId))
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+
+                try
+                {
+                    // An ACK is issued only AFTER PostgreSQL committed metadata.
+                    // A retry after uncertain commit is safe via unique SQL key.
+                    var inserted = await store.AcceptAsync(
+                        tenantId, parsed.UpdateId, parsed.ChatId, context.RequestAborted);
+                    return inserted
+                        ? Results.Ok(new { status = "accepted" })
+                        : Results.Ok(new { status = "duplicate" });
+                }
+                catch (Exception ex) when (ex is NpgsqlException or IOException
+                    or TimeoutException or InvalidOperationException)
+                {
+                    // Never log input, database errors, tokens or private chat IDs.
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+                }
+            }
 
             return dedup.TryAccept(parsed.UpdateId)
                 ? Results.Ok(new { status = "accepted" })

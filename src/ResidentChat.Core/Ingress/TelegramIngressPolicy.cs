@@ -38,4 +38,8 @@ public sealed class TelegramIngressPolicy
     }
 
     public bool IsAllowedGroup(long chatId) => Ready && _allowedChatIds.Contains(chatId);
+
+    /// <summary>Require a complete trusted chat-ID-to-tenant mapping.</summary>
+    public bool MatchesGroupSet(IEnumerable<long> configuredIds) =>
+        Ready && _allowedChatIds.SetEquals(configuredIds);
 }
