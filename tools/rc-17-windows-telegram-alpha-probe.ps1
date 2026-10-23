@@ -95,45 +95,11 @@ try {
     Write-Host 'RC17_WSL_INPUT=NUMERIC_UPDATE_ID_ONLY'
 
     # WSL receives only the numeric update ID as a positional argument.
-    # Windows PowerShell 5.1/native WSL quoting may strip the quote marks
-    # in a Bash -c script that uses "$1" / "${sha}". That expanded the
-    # prior Git object spec into a bare ':tools/...' path. Interpolate
-    # STRICTLY VALIDATED SHA and numeric ID instead: no nested quoting,
-    # no shell-special characters, no token and no raw Telegram update.
-    if ($sha -cnotmatch '^[0-9a-f]{40}
-    if ($LASTEXITCODE -ne 0) {
-        throw 'RC17_LAB_GATE_FAILED'
-    }
-    Write-Host 'RC17_TELEGRAM_ALPHA_SANITIZED_BRIDGE_PASS' -ForegroundColor Green
-}
-catch {
-    Write-Host 'RC17_ONE_SHOT_GATE_FAILED' -ForegroundColor Red
-    throw 'RC17_FAILED_SAFE'
-}
-finally {
-    if ($pointer -ne [IntPtr]::Zero) {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
-    }
-    Remove-Variable token, secure, base, me, hook, resp, candidate, updateId, runner -ErrorAction SilentlyContinue
-}
- -or
-        ([string]$updateId) -notmatch '^[1-9][0-9]{0,17}
-    if ($LASTEXITCODE -ne 0) {
-        throw 'RC17_LAB_GATE_FAILED'
-    }
-    Write-Host 'RC17_TELEGRAM_ALPHA_SANITIZED_BRIDGE_PASS' -ForegroundColor Green
-}
-catch {
-    Write-Host 'RC17_ONE_SHOT_GATE_FAILED' -ForegroundColor Red
-    throw 'RC17_FAILED_SAFE'
-}
-finally {
-    if ($pointer -ne [IntPtr]::Zero) {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
-    }
-    Remove-Variable token, secure, base, me, hook, resp, candidate, updateId, runner -ErrorAction SilentlyContinue
-}
-) {
+    # Windows PowerShell 5.1/native WSL quoting can strip the quotes
+    # around nested Bash positional variables. Embed only validated
+    # hexadecimal SHA and numeric ID; do not pass tokens or messages.
+    if ($sha -cnotmatch '^[0-9a-f]{40}$' -or
+        ([string]$updateId) -notmatch '^[1-9][0-9]{0,17}$') {
         throw 'RC17_INVALID_PIN_OR_UPDATE_ID'
     }
     $runner = 'set -Eeuo pipefail; git --git-dir=/home/user/ResidentChatPRAutotest/source.git show {0}:tools/rc-17-alpha-probe-gate.sh | bash -s -- {0} {1}' -f $sha, ([string]$updateId)
