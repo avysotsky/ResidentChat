@@ -40,6 +40,36 @@ try
         Check(TelegramUpdateInspector.Inspect(doc.RootElement).Kind == TelegramParseKind.Unsupported,
             "private messages ignored");
 
+    // RC-20: read-only RC-19 revealed 1 unknown Alpha message and
+    // 1 unsupported service event. Polling must never ACK either event
+    // merely by incrementing offset. No real Telegram is called by these.
+    Check(TelegramPollingAckGuard.CanAdmit(
+        TelegramParseKind.GroupMessage, true, true, true),
+        "RC-20 properly tenant-mapped classified group is eligible for durable admission");
+    Check(!TelegramPollingAckGuard.CanAdmit(
+        TelegramParseKind.Unsupported, true, true, true),
+        "RC-20 service/unsupported Telegram update blocks offset advance");
+    Check(!TelegramPollingAckGuard.CanAdmit(
+        TelegramParseKind.Invalid, true, true, true),
+        "RC-20 malformed Telegram update blocks offset advance");
+    Check(!TelegramPollingAckGuard.CanAdmit(
+        TelegramParseKind.GroupMessage, false, true, true),
+        "RC-20 foreign or denied Telegram group blocks offset advance");
+    Check(!TelegramPollingAckGuard.CanAdmit(
+        TelegramParseKind.GroupMessage, true, false, true),
+        "RC-20 unmapped group blocks offset advance");
+    Check(!TelegramPollingAckGuard.CanAdmit(
+        TelegramParseKind.GroupMessage, true, true, false),
+        "RC-20 metadata-only without classified encrypted handoff blocks ACK");
+    using (var serviceJson = JsonDocument.Parse(
+        """{"update_id":302,"my_chat_member":{"chat":{"id":-5512397750,"type":"group"}}}"""))
+    {
+        var service = TelegramUpdateInspector.Inspect(serviceJson.RootElement);
+        Check(service.Kind == TelegramParseKind.Unsupported
+            && !TelegramPollingAckGuard.CanAdmit(service.Kind, true, true, true),
+            "RC-20 actual Telegram membership service event cannot skip");
+    }
+
     var dedup = new BoundedUpdateDeduplicator(2);
     Check(dedup.TryAccept(1) && !dedup.TryAccept(1), "duplicate rejected");
     Check(dedup.TryAccept(2) && dedup.TryAccept(3), "bounded cache accepts newer updates");

@@ -44,11 +44,27 @@ public sealed class TelegramPollingOptions
 }
 
 /// <summary>
-/// A single sequential Telegram getUpdates consumer.
-/// No LAN listener, reply/sending capability, external model or raw-text storage.
-/// An offset is advanced ONLY after durable SQL admission for allowed groups.
-/// Restart redelivery is idempotent through PostgreSQL RLS/unique key.
+/// A single sequential Telegram getUpdates consumer; OFF by default.
+/// No LAN listener or Telegram send/delete method. Telegram offsets may only
+/// advance after complete encrypted-review/proposal PostgreSQL admission
+/// for a fully allowlisted tenant-scoped GROUP MESSAGE. Unknown/service,
+/// foreign or malformed events block the queue for explicit disposition.
+/// A metadata-only intake is never enough to confirm live Telegram updates.
 /// </summary>
+/// <summary>
+/// Pure fail-closed guard for Telegram offset advancement. The policy is
+/// intentionally separate from HTTP transport to unit-test ACK safety.
+/// False means STOP processing, not silently skip a pending Telegram update.
+/// </summary>
+public static class TelegramPollingAckGuard
+{
+    public static bool CanAdmit(
+        TelegramParseKind kind, bool allowedGroup, bool mappedTenant,
+        bool classifiedReady) =>
+        kind == TelegramParseKind.GroupMessage && allowedGroup
+        && mappedTenant && classifiedReady;
+}
+
 public sealed class TelegramLongPollingWorker(
     TelegramPollingOptions options,
     DurableTelegramIntakeOptions intake,
@@ -67,9 +83,9 @@ public sealed class TelegramLongPollingWorker(
         if (!options.Ready)
             throw new InvalidOperationException(
                 "Telegram long polling requires an exact durable database tenant mapping.");
-        if (classified.Enabled && !classified.Ready)
+        if (!classified.Enabled || !classified.Ready)
             throw new InvalidOperationException(
-                "Local classification is incomplete; Telegram will not poll.");
+                "Encrypted review and local classification MUST be enabled; no metadata-only polling.");
 
         using var client = new HttpClient(new HttpClientHandler
         {
@@ -123,8 +139,7 @@ public sealed class TelegramLongPollingWorker(
         var target = new Uri("https://api.telegram.org/bot" + token
             + "/getUpdates?timeout=" + SecondsLongPoll
             + "&limit=" + BatchSize
-            + "&offset=" + offset.ToString(CultureInfo.InvariantCulture)
-            + "&allowed_updates=%5B%22message%22%5D");
+            + "&offset=" + offset.ToString(CultureInfo.InvariantCulture));
         using var request = new HttpRequestMessage(HttpMethod.Get, target);
         using var response = await client.SendAsync(
             request, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -166,27 +181,30 @@ public sealed class TelegramLongPollingWorker(
 
                 if (telegramId < offset) continue;
                 var parsed = TelegramUpdateInspector.Inspect(update);
-                if (parsed.Kind == TelegramParseKind.Invalid)
-                    throw new InvalidOperationException("Telegram update malformed.");
-                if (parsed.Kind == TelegramParseKind.GroupMessage
-                    && groupPolicy.IsAllowedGroup(parsed.ChatId))
-                {
-                    if (!intake.TryResolveTenant(parsed.ChatId, out var tenantId))
-                        throw new InvalidOperationException("Telegram tenant mapping missing.");
 
-                    // ACK offset ONLY after real PostgreSQL classification
-                    // and proposal commit (or existing metadata-only lab).
-                    if (classified.Enabled)
-                    {
-                        var message = ClassifiedTelegramPipeline.ExtractMessageText(update);
-                        await pipeline.AcceptAsync(
-                            tenantId, telegramId, parsed.ChatId, message, ct);
-                    }
-                    else
-                    {
-                        await store.AcceptAsync(tenantId, telegramId, parsed.ChatId, ct);
-                    }
-                }
+                // Service events, unsupported kinds, unauthorized chats and
+                // unconfigured group mappings require explicit operator
+                // handling. NEVER increment the Telegram cursor for them.
+                // This intentionally leaves the queue stalled, safely, until
+                // a later durable-disposition policy is implemented.
+                bool authorized = parsed.Kind == TelegramParseKind.GroupMessage
+                    && groupPolicy.IsAllowedGroup(parsed.ChatId);
+                bool mapped = authorized
+                    && intake.TryResolveTenant(parsed.ChatId, out _);
+                if (!TelegramPollingAckGuard.CanAdmit(parsed.Kind, authorized,
+                    mapped, classified.Ready))
+                    throw new InvalidOperationException(
+                        "Unclassified Telegram update blocks offset advancement.");
+
+                if (!intake.TryResolveTenant(parsed.ChatId, out var tenantId))
+                    throw new InvalidOperationException("Telegram tenant mapping missing.");
+
+                // AcceptAsync must atomically commit a pending proposal or
+                // encrypted human-review item, or detect a durable duplicate,
+                // before offset is moved. Failure must leave update pending.
+                var message = ClassifiedTelegramPipeline.ExtractMessageText(update);
+                await pipeline.AcceptAsync(
+                    tenantId, telegramId, parsed.ChatId, message, ct);
 
                 offset = telegramId + 1;
                 commitOffset(offset);
