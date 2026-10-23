@@ -49,20 +49,46 @@ try {
     if (-not $resp.ok) {
         throw 'RC17_TELEGRAM_UPDATES_UNAVAILABLE'
     }
-    $candidate = @($resp.result | Where-Object {
-        $null -ne $_.message -and
-        $_.message.text -ceq $probe -and
-        [long]$_.message.chat.id -eq $alpha -and
-        $_.message.chat.type -eq 'group' -and
-        [long]$_.update_id -gt 0
-    } | Sort-Object -Property update_id -Descending)
+    # Updates may be service events without a message or text property.
+    # Under PowerShell StrictMode, accessing a missing property throws.
+    # Inspect only existing fields, never serialize or log unrelated updates.
+    $candidate = @(
+        foreach ($update in @($resp.result)) {
+            if ($null -eq $update) { continue }
+            $msgField = $update.PSObject.Properties['message']
+            $idField = $update.PSObject.Properties['update_id']
+            if ($null -eq $msgField -or $null -eq $idField -or
+                $null -eq $msgField.Value) { continue }
+            $msg = $msgField.Value
+            $textField = $msg.PSObject.Properties['text']
+            $chatField = $msg.PSObject.Properties['chat']
+            if ($null -eq $textField -or $null -eq $chatField -or
+                $null -eq $chatField.Value) { continue }
+            $chat = $chatField.Value
+            $chatIdField = $chat.PSObject.Properties['id']
+            $chatTypeField = $chat.PSObject.Properties['type']
+            if ($null -eq $chatIdField -or $null -eq $chatTypeField) {
+                continue
+            }
+            $number = [long]0
+            if ($textField.Value -cne $probe -or
+                -not [long]::TryParse([string]$chatIdField.Value, [ref]$number) -or
+                $number -ne $alpha -or $chatTypeField.Value -ne 'group') {
+                continue
+            }
+            if (-not [long]::TryParse([string]$idField.Value, [ref]$number) -or
+                $number -le 0) { continue }
+            [pscustomobject]@{ UpdateId = $number }
+        }
+    )
+    $candidate = @($candidate | Sort-Object -Property UpdateId -Descending)
     if ($candidate.Count -eq 0) {
         Write-Host 'RC17_PROBE_NOT_FOUND' -ForegroundColor Yellow
         Write-Host 'RC17_UPDATES_ACKED=NO'
         Write-Host 'RC17_ACTION=POST_EXACT_TEST_MARKER_AGAIN'
         return
     }
-    $updateId = [long]$candidate[0].update_id
+    $updateId = [long]$candidate[0].UpdateId
     Write-Host 'RC17_ALPHA_EXACT_SYNTHETIC_PROBE_FOUND=YES' -ForegroundColor Green
     Write-Host 'RC17_RAW_TELEGRAM_MESSAGES_FORWARDED=NO'
     Write-Host 'RC17_UPDATES_ACKED=NO'
