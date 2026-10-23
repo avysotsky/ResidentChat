@@ -61,6 +61,11 @@ public static class ResidentChatApp
         builder.Services.AddSingleton(sp => new PostgresDurableProposalStore(
             sp.GetRequiredService<OperatorOptions>().ConnectionString ?? "",
             sp.GetRequiredService<DurableProposalOptions>()));
+        builder.Services.AddSingleton(sp => ClassifiedTelegramOptions.Create(
+            builder.Configuration,
+            sp.GetRequiredService<DurableTelegramIntakeOptions>(),
+            sp.GetRequiredService<DurableProposalOptions>()));
+        builder.Services.AddSingleton<ClassifiedTelegramPipeline>();
         builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Routing.EndpointMiddleware", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Http.Result", LogLevel.Warning);
@@ -72,11 +77,14 @@ public static class ResidentChatApp
         SyntheticConsoleApi.Map(app);
         app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-        // No Telegram outbound calls, local/remote AI calls, message storage or processing yet.
+        // Explicit experimental local-classification mode is OFF by default.
+        // No external LLM or unauthenticated ticket creation is permitted.
         app.MapPost("/telegram/webhook", async (HttpContext context,
             TelegramIngressPolicy ingress, BoundedUpdateDeduplicator dedup,
             DurableTelegramIntakeOptions intake, PostgresTelegramIntakeStore store,
-            TelegramPollingOptions polling) =>
+            TelegramPollingOptions polling,
+            ClassifiedTelegramOptions classified,
+            ClassifiedTelegramPipeline pipeline) =>
         {
             // Never accept a webhook in a process configured for getUpdates,
             // including incomplete polling config; fail closed to 404.
@@ -90,6 +98,8 @@ public static class ResidentChatApp
             // Explicit opt-in with incomplete tenant, database or HMAC config
             // must not silently fall back to the volatile demo deduplicator.
             if (intake.Enabled && !intake.Ready)
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            if (classified.Enabled && !classified.Ready)
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
 
             if (!context.Request.Headers.TryGetValue(SecretHeader, out var values)
@@ -120,11 +130,14 @@ public static class ResidentChatApp
                 return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
 
             TelegramUpdateResult parsed;
+            string? text = null;
             try
             {
                 using JsonDocument json = JsonDocument.Parse(body,
                     new JsonDocumentOptions { MaxDepth = 16 });
                 parsed = TelegramUpdateInspector.Inspect(json.RootElement);
+                if (classified.Enabled && parsed.Kind == TelegramParseKind.GroupMessage)
+                    text = ClassifiedTelegramPipeline.ExtractMessageText(json.RootElement);
             }
             catch (JsonException)
             {
@@ -150,16 +163,23 @@ public static class ResidentChatApp
 
                 try
                 {
-                    // An ACK is issued only AFTER PostgreSQL committed metadata.
-                    // A retry after uncertain commit is safe via unique SQL key.
-                    var inserted = await store.AcceptAsync(
-                        tenantId, parsed.UpdateId, parsed.ChatId, context.RequestAborted);
+                    // Mode A: synthetic metadata-only (existing behavior).
+                    // Mode B: real local Qwen classification followed by
+                    // ATOMIC intake+proposal commit before acknowledging.
+                    var inserted = classified.Enabled
+                        ? await pipeline.AcceptAsync(
+                            tenantId, parsed.UpdateId, parsed.ChatId,
+                            text, context.RequestAborted)
+                        : await store.AcceptAsync(
+                            tenantId, parsed.UpdateId, parsed.ChatId,
+                            context.RequestAborted);
                     return inserted
                         ? Results.Ok(new { status = "accepted" })
                         : Results.Ok(new { status = "duplicate" });
                 }
                 catch (Exception ex) when (ex is NpgsqlException or IOException
-                    or TimeoutException or InvalidOperationException)
+                    or TimeoutException or InvalidOperationException
+                    or OperationCanceledException)
                 {
                     // Never log input, database errors, tokens or private chat IDs.
                     return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);

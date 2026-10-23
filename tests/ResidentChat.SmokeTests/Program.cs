@@ -388,6 +388,50 @@ static void RunDurableProposalConfigurationLab()
         && !PostgresDurableProposalStore.TryParseCaseId(
             "RC-../../tickets", out _),
         "RC-10 case-id parsing never accepts a forged HTTP route");
+    config["ResidentChat:DurableProposals:Enabled"] = "true";
+    config["ResidentChat:ClassifiedTelegram:Enabled"] = "true";
+    config["ResidentChat:ClassifiedTelegram:Mode"] =
+        "maintenance-only-test-groups";
+    config["ResidentChat:ClassifiedTelegram:OllamaEndpoint"] =
+        "http://127.0.0.1:11434/api/generate";
+    config["ResidentChat:ClassifiedTelegram:Model"] = "qwen3:1.7b";
+    ClassifiedTelegramOptions Classified()
+    {
+        var source = new ConfigurationBuilder()
+            .AddInMemoryCollection(config).Build();
+        var intake = DurableTelegramIntakeOptions.Create(source, tg, op);
+        var proposals = DurableProposalOptions.Create(source, op, intake);
+        return ClassifiedTelegramOptions.Create(source, intake, proposals);
+    }
+
+    Check(Classified().Ready, "RC-10 explicit local-only Qwen test mode ready");
+    config["ResidentChat:ClassifiedTelegram:OllamaEndpoint"] =
+        "https://api.openai.com/api/generate";
+    Check(!Classified().Ready,
+        "RC-10 remotely hosted inference endpoint always rejected");
+    config["ResidentChat:ClassifiedTelegram:OllamaEndpoint"] =
+        "http://127.0.0.1:11434/api/generate";
+    config["ResidentChat:ClassifiedTelegram:Mode"] = "production";
+    Check(!Classified().Ready,
+        "RC-10 resident-data processing never enabled by unreviewed config");
+    config["ResidentChat:ClassifiedTelegram:Mode"] =
+        "maintenance-only-test-groups";
+    config["ResidentChat:DurableProposals:Enabled"] = "false";
+    Check(!Classified().Ready,
+        "RC-10 cannot ACK classified Telegram without durable proposal table");
+    config["ResidentChat:DurableProposals:Enabled"] = "true";
+    config["ResidentChat:ClassifiedTelegram:Enabled"] = "false";
+    Check(!Classified().Ready, "RC-10 local model work disabled by default");
+    using (var doc = JsonDocument.Parse(
+        """{"update_id":99,"message":{"chat":{"id":-1001234567890,"type":"supergroup"},"text":"У під'їзді прорвало водопровідну трубу"}}"""))
+        Check(ClassifiedTelegramPipeline.ExtractMessageText(doc.RootElement) is
+            "У під'їзді прорвало водопровідну трубу",
+            "RC-10 original Ukrainian text available only transiently to local model");
+    using (var doc = JsonDocument.Parse(
+        """{"update_id":100,"message":{"chat":{"id":-1001234567890,"type":"supergroup"},"photo":[{}]}}"""))
+        Check(ClassifiedTelegramPipeline.ExtractMessageText(doc.RootElement) is null,
+            "RC-10 unclassifiable non-text update is not silently classified");
+
 }
 
 static void RunDurableIntakeConfigurationLab()

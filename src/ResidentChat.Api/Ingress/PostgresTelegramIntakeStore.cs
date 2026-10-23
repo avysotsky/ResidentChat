@@ -6,6 +6,8 @@ using Npgsql;
 using NpgsqlTypes;
 using ResidentChat.Api.Operator;
 using ResidentChat.Core.Ingress;
+using ResidentChat.Core.Demo;
+using ResidentChat.Core.Tickets;
 
 namespace ResidentChat.Api.Ingress;
 
@@ -87,6 +89,104 @@ public sealed class DurableTelegramIntakeOptions
 public sealed class PostgresTelegramIntakeStore(
     string connectionString, DurableTelegramIntakeOptions config)
 {
+    /// <summary>
+    /// Classification already completed locally; commit the admitted update
+    /// and actionable human-approval proposal in ONE database transaction.
+    /// If either insert fails, NO Telegram acknowledgement may occur.
+    /// </summary>
+    public async Task<bool> AcceptWithProposalAsync(
+        Guid tenantId, long updateId, long groupId, DemoTicketProposal proposal,
+        CancellationToken ct)
+    {
+        if (!config.Ready || tenantId == Guid.Empty || updateId < 0
+            || !config.TryResolveTenant(groupId, out var trustedTenant)
+            || trustedTenant != tenantId || proposal.AuthorizedTenantId != tenantId
+            || !proposal.RequiresHumanApproval
+            || !TicketRules.IsCategory(proposal.Category)
+            || !TicketRules.IsPriority(proposal.Priority))
+            throw new InvalidOperationException("Classified intake lacks trusted tenant scope.");
+
+        var groupHash = HashChat(groupId);
+        await using var db = new NpgsqlConnection(connectionString);
+        await db.OpenAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        await using (var set = new NpgsqlCommand(
+            "SELECT set_config('residentchat.tenant_id', @tenant, true)", db, tx))
+        {
+            set.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenantId.ToString("D"));
+            await set.ExecuteNonQueryAsync(ct);
+        }
+
+        bool added;
+        await using (var insert = new NpgsqlCommand("""
+            INSERT INTO residentchat.telegram_intake
+                (tenant_id, update_id, chat_hash, state)
+            VALUES (@tenant, @update, @hash, 1)
+            ON CONFLICT (tenant_id, update_id) DO NOTHING
+            RETURNING update_id
+            """, db, tx))
+        {
+            insert.Parameters.AddWithValue("tenant", NpgsqlDbType.Uuid, tenantId);
+            insert.Parameters.AddWithValue("update", NpgsqlDbType.Bigint, updateId);
+            insert.Parameters.AddWithValue("hash", NpgsqlDbType.Text, groupHash);
+            added = await insert.ExecuteScalarAsync(ct) is not null;
+        }
+
+        if (added)
+        {
+            await using var create = new NpgsqlCommand("""
+                INSERT INTO residentchat.operator_proposals
+                    (tenant_id, proposal_id, source_update_id,
+                     category, priority, state)
+                VALUES (@tenant, @id, @update, @category, @priority, 1)
+                """, db, tx);
+            create.Parameters.AddWithValue("tenant", NpgsqlDbType.Uuid, tenantId);
+            create.Parameters.AddWithValue("id", NpgsqlDbType.Uuid, Guid.NewGuid());
+            create.Parameters.AddWithValue("update", NpgsqlDbType.Bigint, updateId);
+            create.Parameters.AddWithValue("category", NpgsqlDbType.Smallint,
+                (short)proposal.Category);
+            create.Parameters.AddWithValue("priority", NpgsqlDbType.Smallint,
+                (short)proposal.Priority);
+            await create.ExecuteNonQueryAsync(ct);
+        }
+        else
+        {
+            // Do NOT acknowledge an older metadata-only update that never
+            // yielded a proposal, or a conflicting update from another group.
+            await using var verify = new NpgsqlCommand("""
+                SELECT i.chat_hash
+                FROM residentchat.telegram_intake i
+                JOIN residentchat.operator_proposals p
+                  ON p.tenant_id = i.tenant_id
+                 AND p.source_update_id = i.update_id
+                WHERE i.tenant_id = @tenant AND i.update_id = @update
+                """, db, tx);
+            verify.Parameters.AddWithValue("tenant", NpgsqlDbType.Uuid, tenantId);
+            verify.Parameters.AddWithValue("update", NpgsqlDbType.Bigint, updateId);
+            var previouslyCommittedHash = (string?)await verify.ExecuteScalarAsync(ct);
+            if (!string.Equals(previouslyCommittedHash?.TrimEnd(), groupHash,
+                StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "Duplicate Telegram update has no matching durable proposal.");
+        }
+
+        await tx.CommitAsync(ct);
+        return added;
+    }
+
+    private string HashChat(long chatId)
+    {
+        var key = Encoding.UTF8.GetBytes(config.HmacKey);
+        var input = Encoding.ASCII.GetBytes(
+            chatId.ToString(CultureInfo.InvariantCulture));
+        try { return Convert.ToHexString(HMACSHA256.HashData(key, input)); }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+            CryptographicOperations.ZeroMemory(input);
+        }
+    }
+
     // Server-limited, signed-operator readback. No raw group ID/chat hash
     // or message bytes are exposed to the React operator UI.
     public async Task<IReadOnlyList<TelegramIntakeSnapshot>> ListRecentAsync(
@@ -133,19 +233,7 @@ public sealed class PostgresTelegramIntakeStore(
             || mappedTenant != tenantId)
             throw new InvalidOperationException("Durable ingress scope is not configured.");
 
-        var key = Encoding.UTF8.GetBytes(config.HmacKey);
-        var input = Encoding.ASCII.GetBytes(
-            groupId.ToString(CultureInfo.InvariantCulture));
-        string groupHash;
-        try
-        {
-            groupHash = Convert.ToHexString(HMACSHA256.HashData(key, input));
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(key);
-            CryptographicOperations.ZeroMemory(input);
-        }
+        var groupHash = HashChat(groupId);
 
         await using var db = new NpgsqlConnection(connectionString);
         await db.OpenAsync(ct);

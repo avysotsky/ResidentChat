@@ -44,8 +44,8 @@ public sealed class TelegramPollingOptions
 }
 
 /// <summary>
-/// A single sequential, read-only Telegram getUpdates consumer.
-/// No LAN listener, reply/sending capability, model call or raw-text storage.
+/// A single sequential Telegram getUpdates consumer.
+/// No LAN listener, reply/sending capability, external model or raw-text storage.
 /// An offset is advanced ONLY after durable SQL admission for allowed groups.
 /// Restart redelivery is idempotent through PostgreSQL RLS/unique key.
 /// </summary>
@@ -53,7 +53,9 @@ public sealed class TelegramLongPollingWorker(
     TelegramPollingOptions options,
     DurableTelegramIntakeOptions intake,
     PostgresTelegramIntakeStore store,
-    TelegramIngressPolicy groupPolicy) : BackgroundService
+    TelegramIngressPolicy groupPolicy,
+    ClassifiedTelegramOptions classified,
+    ClassifiedTelegramPipeline pipeline) : BackgroundService
 {
     private const int MaxResponseBytes = 262_144;
     private const int BatchSize = 30;
@@ -65,6 +67,9 @@ public sealed class TelegramLongPollingWorker(
         if (!options.Ready)
             throw new InvalidOperationException(
                 "Telegram long polling requires an exact durable database tenant mapping.");
+        if (classified.Enabled && !classified.Ready)
+            throw new InvalidOperationException(
+                "Local classification is incomplete; Telegram will not poll.");
 
         using var client = new HttpClient(new HttpClientHandler
         {
@@ -169,8 +174,18 @@ public sealed class TelegramLongPollingWorker(
                     if (!intake.TryResolveTenant(parsed.ChatId, out var tenantId))
                         throw new InvalidOperationException("Telegram tenant mapping missing.");
 
-                    // This commit happens before the offset is advanced.
-                    await store.AcceptAsync(tenantId, telegramId, parsed.ChatId, ct);
+                    // ACK offset ONLY after real PostgreSQL classification
+                    // and proposal commit (or existing metadata-only lab).
+                    if (classified.Enabled)
+                    {
+                        var message = ClassifiedTelegramPipeline.ExtractMessageText(update);
+                        await pipeline.AcceptAsync(
+                            tenantId, telegramId, parsed.ChatId, message, ct);
+                    }
+                    else
+                    {
+                        await store.AcceptAsync(tenantId, telegramId, parsed.ChatId, ct);
+                    }
                 }
 
                 offset = telegramId + 1;
