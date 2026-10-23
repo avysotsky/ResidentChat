@@ -41,6 +41,21 @@ The groups' existence alone does not establish a configured bot, chat IDs, permi
 9. Malformed model JSON, unexpected fields, oversized response, remote endpoint, HTTP redirect → fail closed.
 10. Duplicated Telegram update ID → RC-01 in-memory replay protection only; durable idempotency still needed before live action.
 
+## RC-17 owner-executed acceptance — PASS (2026-10-23)
+
+The owner executed `tools/rc-17-windows-telegram-alpha-probe.ps1` from verified wrapper commit `bf55934458e006810dd6ccfb6e17b262078d3235` against pinned test-source commit `85f81bae4037667e5b0947d3a0168ba9ee79a51e`. Actual local output:
+- `RC17_BOT_IDENTITY_AND_PRIVACY_PASS`, `RC17_WEBHOOK=NONE`, `RC17_ALPHA_EXACT_SYNTHETIC_PROBE_FOUND=YES`
+- `RC17_RAW_TELEGRAM_MESSAGES_FORWARDED=NO`, `RC17_UPDATES_ACKED=NO`, `RC17_WSL_INPUT=NUMERIC_UPDATE_ID_ONLY`
+- `RC-17 REAL TELEGRAM PROBE + LOCAL QWEN + POSTGRESQL PASS`
+- `RC-17 REAL LAB-ALPHA PROBE (SANITIZED) + QWEN + POSTGRESQL PASS sha=85f81bae4037667e5b0947d3a0168ba9ee79a51e`
+- `RC-13 MODEL RELEASE REQUESTED`, `RC-17 CLEANUP PASS`, `RC17_TELEGRAM_ALPHA_SANITIZED_BRIDGE_PASS`
+
+**Precisely what this proves:** Telegram `getUpdates` on Windows returned an update matching the exact known synthetic marker in test-only Alpha chat. Windows decrypted the local DPAPI bot token, validated bot and absence of webhook, and transferred only the numeric `update_id` to WSL. The WSL runner reconstructed the hardcoded synthetic message with actual Alpha chat ID, submitted it through real C#/.NET webhook to loopback Qwen and disposable PostgreSQL17; verified encrypted review, RLS/JWT read access, duplicate delivery, restart behavior and no auto-created ticket. All test DB and bridge resources were cleaned up. Temporary ASP.NET DataProtection and workload warnings were nonfatal in this isolated lab.
+
+**Not proved:** genuine Telegram raw message ingestion, real `TelegramLongPollingWorker` execution, offset/ACK advancement, full coverage of non-text updates, durable 24/7 operation, user-facing React browser workflow, or second/third group mapping. No real chat data was forwarded to WSL; no bot replies; no production service was activated.
+
+**RC-18 next engineering boundary (NOT RUN):** build and test a *Windows-hosted*, explicitly operator-started, one-shot/lower-risk Telegram polling adapter which uses the DPAPI token without passing credentials in shell arguments or process environment. Begin with a strictly allowlisted synthetic-only Alpha fixture and preserve `update_id` semantics. Evaluate pre-existing pending updates and fail-closed handling before allowing acknowledgement; current no-offset probing must not be mistaken for durable delivery. Keep production webhook/polling off and Beta/Moderation out of scope until separately authorized. Add controlled runtime start/stop, logs free of tokens and message text, and negative tests for off-tenant, retry, malformed/oversized input, restart, model unavailable, and database unavailable.
+
 ## Three separate stages
 
 **Stage 1: automated WSL2 synthetic gate (ACTIVE).** Its fixed target is tests/ResidentChat.SmokeTests/ResidentChat.SmokeTests.csproj. It restores, builds and runs synthetic tests. Local AI transport is simulated using a fake HttpMessageHandler. No network call to Telegram or Ollama, no real messages, no cloud services.
