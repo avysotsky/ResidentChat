@@ -47,6 +47,21 @@ try
     }
     await SetupDatabaseAsync(adminConn!);
 
+    // RC-17: accept ONLY the exact synthetic marker actually seen via
+    // Windows DPAPI Telegram getUpdates. No raw update is sent to WSL.
+    // This is one-shot HTTP admission, NOT deployment of Telegram polling.
+    if (args.Length == 1 && args[0] == "--alpha-telegram-probe-live")
+    {
+        Check(Environment.GetEnvironmentVariable("RC05_TEST_ISOLATED") == "1",
+            "RC-17 must use disposable PostgreSQL lab");
+        var value = Environment.GetEnvironmentVariable("RC17_PROBE_UPDATE_ID");
+        Check(long.TryParse(value, out var id) && id > 0 && id < long.MaxValue,
+            "RC-17 exact Telegram update ID is required");
+        await VerifyAlphaTelegramProbeAsync(adminConn!, appConn!, id);
+        Console.WriteLine("RC-17 REAL TELEGRAM PROBE + LOCAL QWEN + POSTGRESQL PASS");
+        return 0;
+    }
+
     // RC-14 explicitly opt-in: genuine local-Qwen + real HTTP webhook +
     // ephemeral PostgreSQL. The ordinary RC-05 acceptance remains offline.
     if (args.Length == 1 && args[0] == "--classified-webhook-live")
@@ -410,6 +425,101 @@ catch (Exception error)
     return 1;
 }
 
+
+static async Task VerifyAlphaTelegramProbeAsync(
+    string adminConnection, string runtimeConnection, long updateId)
+{
+    // Windows checked this real Telegram update came from pinned LAB Alpha
+    // and carried ONLY exact synthetic marker. Never ingest raw Telegram
+    // updates, PII, members, bot token, or even arbitrary message text.
+    const string marker = "RC_ALPHA_PROBE_20261023";
+    const long actualAlphaChatId = -5512397750;
+    var fixture = JsonSerializer.Serialize(new {
+        update_id = updateId,
+        message = new {
+            chat = new { id = actualAlphaChatId, type = "group" },
+            text = marker
+        }
+    });
+    string operatorJwt = Jwt(Tenant1, "operator", "rc17-alpha-probe");
+    string foreignJwt = Jwt(Tenant2, "operator", "rc17-foreign-tenant");
+
+    async Task<long> Count(string table)
+    {
+        if (table is not ("telegram_intake" or "telegram_reviews"
+            or "operator_proposals" or "tickets" or "ticket_audit"))
+            throw new InvalidOperationException("RC17 table not allowed");
+        await using var db = new NpgsqlConnection(adminConnection);
+        await db.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            "SELECT count(*) FROM residentchat." + table, db);
+        return (long)(await cmd.ExecuteScalarAsync())!;
+    }
+
+    async Task Expect(HttpClient client, string status)
+    {
+        using var response = await PostWebhook(client, fixture);
+        Check(response.StatusCode == HttpStatusCode.OK
+            && (await response.Content.ReadAsStringAsync()).Contains(
+                "\"status\":\"" + status + "\"", StringComparison.Ordinal),
+            "RC17 webhook ACK only after commit");
+    }
+
+    await using (var server = await StartAsync(runtimeConnection, true, true,
+        consoleEnabled: true, durableIntake: true, durableProposals: true,
+        encryptedReview: true, classifiedLive: true, actualAlphaOnly: true))
+    {
+        await Expect(server.Client, "accepted");
+        // Unique synthetic probe contains no maintenance request. It must
+        // never generate a ticket proposal even if Qwen hallucinates one.
+        Check(await Count("telegram_intake") == 1
+            && await Count("telegram_reviews") == 1
+            && await Count("operator_proposals") == 0
+            && await Count("tickets") == 0,
+            "RC17 exact marker encrypted for human review, no automatic proposal");
+        await Expect(server.Client, "duplicate");
+        Check(await Count("telegram_intake") == 1
+            && await Count("telegram_reviews") == 1,
+            "RC17 repeated Telegram update is durable idempotent");
+
+        using var own = await Get(server.Client,
+            "/operator/console/v1/reviews", operatorJwt);
+        using var other = await Get(server.Client,
+            "/operator/console/v1/reviews", foreignJwt);
+        using var anonymous = await Get(server.Client,
+            "/operator/console/v1/reviews", null);
+        Check(own.StatusCode == HttpStatusCode.OK
+            && other.StatusCode == HttpStatusCode.OK
+            && anonymous.StatusCode == HttpStatusCode.Unauthorized,
+            "RC17 review list needs signed scope");
+        var list = await own.Content.ReadAsStringAsync();
+        using var ownDoc = JsonDocument.Parse(list);
+        using var otherDoc = JsonDocument.Parse(await other.Content.ReadAsStringAsync());
+        Check(ownDoc.RootElement.GetArrayLength() == 1
+            && otherDoc.RootElement.GetArrayLength() == 0
+            && !list.Contains(marker, StringComparison.Ordinal),
+            "RC17 Alpha encrypted review metadata tenant isolated");
+        using var detail = await Get(server.Client,
+            "/operator/console/v1/reviews/" + updateId, operatorJwt);
+        using var foreignDetail = await Get(server.Client,
+            "/operator/console/v1/reviews/" + updateId, foreignJwt);
+        Check(detail.StatusCode == HttpStatusCode.OK
+            && foreignDetail.StatusCode == HttpStatusCode.NotFound
+            && (await detail.Content.ReadAsStringAsync()).Contains(
+                marker, StringComparison.Ordinal),
+            "RC17 audited authorized decrypt returns exact marker");
+    }
+    await using (var restarted = await StartAsync(runtimeConnection, true, true,
+        consoleEnabled: true, durableIntake: true, durableProposals: true,
+        encryptedReview: true, classifiedLive: true, actualAlphaOnly: true))
+    {
+        await Expect(restarted.Client, "duplicate");
+    }
+    Check(await Count("telegram_reviews") == 1
+        && await Count("operator_proposals") == 0
+        && await Count("tickets") == 0 && await Count("ticket_audit") == 0,
+        "RC17 restart dedup, zero automatic tickets or ticket audits");
+}
 
 static async Task VerifyClassifiedWebhookLiveAsync(
     string adminConnection, string runtimeConnection)
@@ -1138,7 +1248,7 @@ static async Task<SyntheticServer> StartAsync(
     string connection, bool enabled, bool configured, bool consoleEnabled = false,
     bool durableIntake = false, bool badGroupMap = false,
     bool durableProposals = false, bool encryptedReview = false,
-    bool classifiedLive = false)
+    bool classifiedLive = false, bool actualAlphaOnly = false)
 {
     var overrides = new Dictionary<string, string?>
     {
@@ -1157,16 +1267,22 @@ static async Task<SyntheticServer> StartAsync(
     {
         overrides["ResidentChat:Telegram:Enabled"] = "true";
         overrides["ResidentChat:Telegram:WebhookSecret"] = SyntheticTelegramSecret;
-        overrides["ResidentChat:Telegram:AllowedChatIds:0"] = AlphaChat.ToString();
-        overrides["ResidentChat:Telegram:AllowedChatIds:1"] = BetaChat.ToString();
+        overrides["ResidentChat:Telegram:AllowedChatIds:0"] =
+            (actualAlphaOnly ? -5512397750L : AlphaChat).ToString();
+        if (!actualAlphaOnly)
+            overrides["ResidentChat:Telegram:AllowedChatIds:1"] = BetaChat.ToString();
         overrides["ResidentChat:DurableIntake:Enabled"] = "true";
         overrides["ResidentChat:DurableIntake:Mode"] = "metadata-only-test-groups";
         overrides["ResidentChat:DurableIntake:ChatHashHmacKey"] = SyntheticHmacKey;
-        overrides["ResidentChat:DurableIntake:Groups:0:ChatId"] = AlphaChat.ToString();
+        overrides["ResidentChat:DurableIntake:Groups:0:ChatId"] =
+            (actualAlphaOnly ? -5512397750L : AlphaChat).ToString();
         overrides["ResidentChat:DurableIntake:Groups:0:TenantId"] = Tenant1;
-        overrides["ResidentChat:DurableIntake:Groups:1:ChatId"] = BetaChat.ToString();
-        overrides["ResidentChat:DurableIntake:Groups:1:TenantId"] =
-            badGroupMap ? Outsider : Tenant2;
+        if (!actualAlphaOnly)
+        {
+            overrides["ResidentChat:DurableIntake:Groups:1:ChatId"] = BetaChat.ToString();
+            overrides["ResidentChat:DurableIntake:Groups:1:TenantId"] =
+                badGroupMap ? Outsider : Tenant2;
+        }
     }
     if (durableProposals)
     {
