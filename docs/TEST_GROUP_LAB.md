@@ -66,6 +66,20 @@ Pinned source `08a25533c63637b8994335a987f6a758391a3ca5` provides `tools/rc-18-a
 
 The temporary test **does not run the production Telegram long-polling worker, does not send Telegram messages, does not advance Telegram `offset` / acknowledge updates, and does not deploy or merge**. A successful run establishes a narrow live-message-text transport and isolated API acceptance, **not** durable/continuous Telegram delivery. PostgreSQL is intentionally destroyed after test. A separate fail-closed offset plan must account for pending older and unrelated updates before implementing any real Telegram ACK. The Base64 test text is **not a secret** and might be observable to local process inspection; this approach is appropriate *only because* the content is a preapproved fictional fixture.
 
+## RC-18 owner-executed actual Telegram text acceptance — PASS (2026-10-23)
+
+Owner posted the exact fictional phrase **У підвалі тече вода з труби** in lab-only Alpha and ran the pinned Windows DPAPI wrapper at commit **5a1752202a80a29f5783c1ff019d24fc2da35dc6**, running C# integration source commit **08a25533c63637b8994335a987f6a758391a3ca5**. Observed **RC18_BOT_IDENTITY_AND_PRIVACY_PASS**, **RC18_EXACT_ALLOWLISTED_TEXT_TRANSPORT=YES**, **RC18_UPDATES_ACKED=NO**, **RC-18 REAL TELEGRAM TEXT + LOCAL QWEN + POSTGRESQL PASS**, **RC-18 CLEANUP PASS** and **RC18_TELEGRAM_ALPHA_REAL_TEXT_BRIDGE_PASS**.
+
+This verifies that real Telegram message.text bytes for the single preapproved synthetic water fixture reached the disposable local C#/.NET10 webhook, local Qwen and PostgreSQL17; the test asserted one pending operator proposal, JWT/RLS tenant isolation, durable idempotency on restart and zero automatic tickets. The disposable PostgreSQL and local model bridge were removed at the end. It does NOT verify arbitrary resident texts, actual TelegramLongPollingWorker execution, offset/ACK advancement, persistence after lab cleanup, or actual React UI browser use. No bot replies were sent and the PR remains Draft.
+
+## RC-19 pending-update queue read-only audit — PREPARED, NOT RUN
+
+Script **tools/rc-19-windows-queue-audit.ps1** uses the Windows user DPAPI vault and reads only Telegram getMe, getWebhookInfo, getChatMember (bot self-check) and getUpdates with limit=100, timeout=0, **without offset or allowed_updates**. It never modifies the Bot API update filter, changes group settings, acknowledges/deletes updates, sends messages, starts WSL, or invokes Qwen.
+
+It prints only safe numeric counts: number scanned, exact Alpha probe matches, exact Alpha water matches, Alpha other messages, foreign-chat updates, unsupported or service events, malformed updates, duplicate update IDs and capped 100-item batches. No token, Telegram message text, chat ID, update ID or raw Telegram payload is printed or forwarded. If unknown, unsupported or foreign updates exist (or the response is capped at 100), reports **UNCLASSIFIED_PRESENT**; do not advance offsets. Even if all observed updates are known fictional fixtures, this scan is NOT sufficient to authorize ACK or a persistent polling worker: it reports **RC19_ACK_AUTHORIZED=NO** unconditionally. The first 100 updates do not prove the full history or absence of concurrent consumers.
+
+Operator should run only the pinned read-only script, return the safe status lines, and decide next isolated step based on the observed queue. Any eventual durable polling must include an explicit cursor/ACK contract, transient failure and unknown-event policy, and recovery tests; no skip/drop_pending_updates strategy should be used.
+
 ## Three separate stages
 
 **Stage 1: automated WSL2 synthetic gate (ACTIVE).** Its fixed target is tests/ResidentChat.SmokeTests/ResidentChat.SmokeTests.csproj. It restores, builds and runs synthetic tests. Local AI transport is simulated using a fake HttpMessageHandler. No network call to Telegram or Ollama, no real messages, no cloud services.
