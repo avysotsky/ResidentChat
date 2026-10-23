@@ -379,6 +379,24 @@ static void RunDurableIntakeConfigurationLab()
             policy, options);
 
     var good = Config();
+    var pollConfig = new Dictionary<string, string?>
+    {
+        ["ResidentChat:TelegramPolling:Enabled"] = "true",
+        ["ResidentChat:TelegramPolling:BotToken"] =
+            "123456789:ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnop"
+    };
+    TelegramPollingOptions Poll() => TelegramPollingOptions.Create(
+        new ConfigurationBuilder().AddInMemoryCollection(pollConfig).Build(), good);
+    Check(Poll().Enabled && Poll().Ready,
+        "RC-10 correctly configured single Telegram polling source is ready");
+    pollConfig["ResidentChat:TelegramPolling:BotToken"] = "not-a-bot-token";
+    Check(!Poll().Ready, "RC-10 malformed Telegram bot token fails closed");
+    pollConfig["ResidentChat:TelegramPolling:BotToken"] =
+        "123456789:ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnop";
+    pollConfig["ResidentChat:TelegramPolling:Enabled"] = "false";
+    Check(!Poll().Enabled && !Poll().Ready,
+        "RC-10 Telegram external network calls disabled by default");
+
     Check(good.Enabled && good.Ready
         && good.TryResolveTenant(AllowedChat, out var alpha) && alpha == tenant
         && good.TryResolveTenant(ForeignChat, out var beta) && beta == secondTenant
