@@ -392,6 +392,13 @@ public sealed class LocalModelClassifier : IDisposable
                 || (intent == ResidentIntent.Maintenance && category is null))
                 return ResidentDecision.ReviewRequired;
 
+            // Category affects routing ONLY for maintenance. A small local model
+            // may put "other" in the category of FAQ/spam/emergency despite
+            // correctly choosing the intent. Normalize that irrelevant field
+            // without downgrading urgency or removing required human review.
+            if (intent != ResidentIntent.Maintenance)
+                category = null;
+
             // C# policy overrides an unsafe model judgement. No direct action can result.
             var human = humanToken.GetBoolean()
                 || intent is ResidentIntent.Conflict or ResidentIntent.Emergency
