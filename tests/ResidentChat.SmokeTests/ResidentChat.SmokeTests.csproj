@@ -18,6 +18,8 @@
     <ProjectReference Include="../../tools/ResidentChat.Demo/ResidentChat.Demo.csproj" />
     <!-- Compile-only: live synthetic OperatorSmokeTests execute in separate isolated PostgreSQL. -->
     <ProjectReference Include="../ResidentChat.OperatorSmokeTests/ResidentChat.OperatorSmokeTests.csproj" />
+    <!-- Compile-only RC-24: permanent DB runtime probe is NEVER run in offline watcher. -->
+    <ProjectReference Include="../../tools/ResidentChat.PersistentDbProbe/ResidentChat.PersistentDbProbe.csproj" />
     <!-- Compile-only coverage: PostgreSQL acceptance executable is NOT run by the offline smoke gate. -->
     <ProjectReference Include="../ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj" />
   </ItemGroup>
