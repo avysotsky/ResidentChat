@@ -122,6 +122,50 @@ public static class SyntheticConsoleApi
             });
         }
 
+        // Only the signed, loopback operator can retrieve decrypted text.
+        // Listing never decrypts; individual reads create pseudonymous audit.
+        var reviews = app.Services.GetRequiredService<TelegramReviewOptions>();
+        if (reviews.Ready)
+        {
+            group.MapGet("/reviews", async (HttpContext ctx,
+                PostgresTelegramReviewStore store, OperatorOptions settings) =>
+            {
+                if (!IsDirectLoopback(ctx)) return Results.NotFound();
+                if (!OperatorAccess.TryGetScope(ctx.User, settings, out var tenant, out _))
+                    return Results.Forbid();
+                SetNoStore(ctx);
+                try { return Results.Ok(await store.ListAsync(tenant, ctx.RequestAborted)); }
+                catch (Exception ex) when (ex is NpgsqlException or IOException
+                    or InvalidOperationException or TimeoutException)
+                {
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+                }
+            });
+            group.MapGet("/reviews/{updateId:long}", async (long updateId,
+                HttpContext ctx, PostgresTelegramReviewStore store,
+                OperatorOptions settings) =>
+            {
+                if (!IsDirectLoopback(ctx)) return Results.NotFound();
+                if (!OperatorAccess.TryGetScope(ctx.User, settings,
+                    out var tenant, out var actor))
+                    return Results.Forbid();
+                if (updateId < 0) return Results.NotFound();
+                SetNoStore(ctx);
+                try
+                {
+                    var detail = await store.ReadForOperatorAsync(
+                        tenant, updateId, actor, ctx.RequestAborted);
+                    return detail is null ? Results.NotFound() : Results.Ok(detail);
+                }
+                catch (Exception ex) when (ex is NpgsqlException or IOException
+                    or InvalidOperationException or TimeoutException)
+                {
+                    // No ciphertext/decryption/SQL error details in response.
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+                }
+            });
+        }
+
         group.MapPost("/proposals/{caseId}/approve",
             (string caseId, HttpContext ctx, SyntheticConsoleInbox inbox,
                 OperatorOptions options, PostgresTicketStore store) =>

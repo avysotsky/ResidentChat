@@ -71,3 +71,13 @@ input:focus-visible,button:focus-visible{outline:3px solid #6ba9d9;outline-offse
   padding:10px 0;border-top:1px solid #e2e9ee;font-size:.83rem}
 .intake-id{font-weight:700;color:#25445b}
 .intake-list time{color:#617789;margin-left:auto}
+
+.review-panel{margin:0 0 22px}
+.review-list{padding:0;list-style:none;margin:12px 0}
+.review-list li{display:flex;justify-content:space-between;align-items:center;
+  flex-wrap:wrap;gap:12px;border-top:1px solid #e2e9ee;padding:12px 0}
+.review-list li>div{display:flex;flex-direction:column;gap:3px;font-size:.87rem}
+.review-list small{color:#677b89}
+.review-detail{background:#f4f8fa;border:1px solid #c9d7e3;border-radius:10px;
+  padding:15px;max-width:100%;overflow-wrap:anywhere}
+.review-detail p{white-space:pre-wrap;line-height:1.5}

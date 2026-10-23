@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Proposal, IntakeReceipt } from "./api/contracts";
+import type { Proposal, IntakeReceipt, ReviewReceipt } from "./api/contracts";
 import {
-  changeProposal, clearSyntheticToken, getProposals, getIntake, OperatorHttpError,
+  changeProposal, clearSyntheticToken, getProposals, getIntake, getReviews, OperatorHttpError,
   hasSyntheticToken, useSyntheticToken
 } from "./api/operatorApi";
 import { OperatorLogin } from "./components/OperatorLogin";
 import { ProposalList } from "./components/ProposalList";
 import { TelegramIntakePanel } from "./components/TelegramIntakePanel";
+import { TelegramReviewsPanel } from "./components/TelegramReviewsPanel";
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(false);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [intakeItems, setIntakeItems] = useState<IntakeReceipt[]>([]);
   const [intakeMessage, setIntakeMessage] = useState("");
+  const [reviewItems, setReviewItems] = useState<ReviewReceipt[]>([]);
+  const [reviewMessage, setReviewMessage] = useState("");
   const [feedback, setFeedback] = useState("Очікуємо тестову авторизацію оператора.");
   const [loading, setLoading] = useState(false);
   const [busyCase, setBusyCase] = useState<string | null>(null);
@@ -32,6 +35,8 @@ export default function App() {
     setProposals([]);
     setIntakeItems([]);
     setIntakeMessage("");
+    setReviewItems([]);
+    setReviewMessage("");
     setBlockedIds(new Set());
     setBusyCase(null);
     setLoading(false);
@@ -75,7 +80,20 @@ export default function App() {
           ? "Тестове приймання Telegram зараз вимкнено."
           : "Метадані Telegram недоступні; перевірте PostgreSQL окремо.";
       }
+      let reviews: ReviewReceipt[] = [];
+      let reviewNotice = "";
+      try {
+        reviews = await getReviews(controller.signal);
+      } catch (error: unknown) {
+        if (error instanceof OperatorHttpError
+          && (error.status === 401 || error.status === 403)) throw error;
+        reviewNotice = error instanceof OperatorHttpError && error.status === 404
+          ? "Ручний розгляд Telegram наразі вимкнений."
+          : "Чергу ручного розгляду зараз не прочитано.";
+      }
       if (session.current !== expectedSession || controller.signal.aborted) return false;
+      setReviewItems(reviews);
+      setReviewMessage(reviewNotice);
       setIntakeItems(intake);
       setIntakeMessage(intakeNotice);
       setProposals(items);
@@ -88,6 +106,8 @@ export default function App() {
       setProposals([]);
       setIntakeItems([]);
       setIntakeMessage("");
+      setReviewItems([]);
+      setReviewMessage("");
       if (error instanceof OperatorHttpError && (error.status === 401 || error.status === 403)) {
         clearSyntheticToken();
         setAuthenticated(false);
@@ -182,6 +202,8 @@ export default function App() {
       <p className="feedback" role="status" aria-live="polite">{feedback}</p>
       <TelegramIntakePanel authenticated={authenticated} loading={loading}
         items={intakeItems} message={intakeMessage} />
+      {authenticated && <TelegramReviewsPanel key={sessionVersion}
+        items={reviewItems} message={reviewMessage} />}
       <ProposalList proposals={proposals} authenticated={authenticated}
         loading={loading} busy={busyCase !== null} blockedIds={blockedIds}
         refreshVersion={refreshVersion} sessionVersion={sessionVersion}

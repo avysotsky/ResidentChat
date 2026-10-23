@@ -1,5 +1,5 @@
-import { parseProposals, parseTicket, parseIntake } from "./contracts.ts";
-import type { Proposal, TicketReadback, IntakeReceipt } from "./contracts";
+import { parseProposals, parseTicket, parseIntake, parseReviews, parseReviewDetail } from "./contracts.ts";
+import type { Proposal, TicketReadback, IntakeReceipt, ReviewReceipt, ReviewDetail } from "./contracts";
 
 // A fictional short-lived lab JWT lives ONLY in JS module memory.
 // Never use cookie, localStorage, sessionStorage, URL, telemetry or logs.
@@ -74,4 +74,15 @@ export async function getTicket(id: string, signal?: AbortSignal): Promise<Ticke
 /** Read-only, signed and tenant-scoped. The endpoint exists only in test mode. */
 export async function getIntake(signal?: AbortSignal): Promise<IntakeReceipt[]> {
   return parseIntake(await json("/operator/console/v1/intake", signal));
+}
+
+/** No review text is fetched on page load; detail is explicit operator action. */
+export async function getReviews(signal?: AbortSignal): Promise<ReviewReceipt[]> {
+  return parseReviews(await json("/operator/console/v1/reviews", signal));
+}
+export async function getReviewDetail(id: number, signal?: AbortSignal): Promise<ReviewDetail> {
+  if (!Number.isSafeInteger(id) || id < 0)
+    throw new Error("Некоректний Telegram update ID");
+  return parseReviewDetail(await json(
+    "/operator/console/v1/reviews/" + String(id), signal), id);
 }

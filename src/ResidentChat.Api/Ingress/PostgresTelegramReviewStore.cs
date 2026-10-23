@@ -61,6 +61,8 @@ public sealed class TelegramReviewOptions
 public sealed record TelegramReviewSnapshot(
     long UpdateId, TelegramReviewReason Reason, DateTimeOffset ReceivedAt,
     DateTimeOffset ExpiresAt);
+public sealed record TelegramReviewDetail(
+    long UpdateId, TelegramReviewReason Reason, string Text, DateTimeOffset ExpiresAt);
 
 /// <summary>
 /// AES-256-GCM envelope encrypted before PostgreSQL transaction. Tenant ID,
@@ -187,6 +189,81 @@ public sealed class PostgresTelegramReviewStore(
         }
         await tx.CommitAsync(ct);
         return result;
+    }
+
+    public async Task<TelegramReviewDetail?> ReadForOperatorAsync(
+        Guid tenantId, long updateId, string actorHash, CancellationToken ct)
+    {
+        EnsureScope(tenantId);
+        if (updateId < 0 || actorHash.Length != 64
+            || actorHash.AsSpan().IndexOfAnyExcept("0123456789ABCDEF") >= 0)
+            throw new InvalidOperationException("Review read identity invalid.");
+
+        await using var db = new NpgsqlConnection(connectionString);
+        await db.OpenAsync(ct);
+        await using var tx = await db.BeginTransactionAsync(ct);
+        await SetTenantAsync(db, tx, tenantId, ct);
+        byte[] nonce, cipher, tag;
+        string hash;
+        TelegramReviewReason reason;
+        DateTimeOffset expires;
+        await using (var query = new NpgsqlCommand("""
+            SELECT r.nonce, r.cipher, r.tag, i.chat_hash, r.reason, r.expires_at
+            FROM residentchat.telegram_reviews r
+            JOIN residentchat.telegram_intake i
+              ON i.tenant_id = r.tenant_id AND i.update_id = r.update_id
+            WHERE r.tenant_id = @tenant AND r.update_id = @update
+              AND r.expires_at > now()
+            """, db, tx))
+        {
+            query.Parameters.AddWithValue("tenant", NpgsqlDbType.Uuid, tenantId);
+            query.Parameters.AddWithValue("update", NpgsqlDbType.Bigint, updateId);
+            await using var reader = await query.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return null;
+            nonce = reader.GetFieldValue<byte[]>(0);
+            cipher = reader.GetFieldValue<byte[]>(1);
+            tag = reader.GetFieldValue<byte[]>(2);
+            hash = reader.GetString(3).TrimEnd();
+            reason = (TelegramReviewReason)reader.GetInt16(4);
+            expires = new DateTimeOffset(reader.GetDateTime(5));
+        }
+
+        var aad = AssociatedData(tenantId, updateId, hash);
+        var clear = new byte[cipher.Length];
+        string text;
+        try
+        {
+            using (var aes = new AesGcm(options.Key, 16))
+                aes.Decrypt(nonce, cipher, tag, clear, aad);
+            text = new UTF8Encoding(false, true).GetString(clear);
+        }
+        catch (CryptographicException)
+        {
+            throw new InvalidOperationException("Encrypted review authentication failed.");
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(aad);
+            CryptographicOperations.ZeroMemory(clear);
+            CryptographicOperations.ZeroMemory(cipher);
+        }
+
+        // One read audit and its return are one scoped transaction. No raw
+        // message content, group identity or token is ever sent to an audit.
+        await using (var audit = new NpgsqlCommand("""
+            INSERT INTO residentchat.telegram_review_reads
+                (tenant_id, read_id, update_id, actor_hash)
+            VALUES (@tenant, @read, @update, @actor)
+            """, db, tx))
+        {
+            audit.Parameters.AddWithValue("tenant", NpgsqlDbType.Uuid, tenantId);
+            audit.Parameters.AddWithValue("read", NpgsqlDbType.Uuid, Guid.NewGuid());
+            audit.Parameters.AddWithValue("update", NpgsqlDbType.Bigint, updateId);
+            audit.Parameters.AddWithValue("actor", NpgsqlDbType.Text, actorHash);
+            await audit.ExecuteNonQueryAsync(ct);
+        }
+        await tx.CommitAsync(ct);
+        return new TelegramReviewDetail(updateId, reason, text, expires);
     }
 
     private void EnsureScope(Guid tenantId)

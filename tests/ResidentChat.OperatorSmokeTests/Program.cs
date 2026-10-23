@@ -418,6 +418,39 @@ static async Task VerifyEncryptedTelegramReviewAsync(
             CancellationToken.None), "encrypted review duplicate is idempotent");
         var own = await reviews.ListAsync(alphaTenant, CancellationToken.None);
         var foreign = await reviews.ListAsync(Guid.Parse(Tenant2), CancellationToken.None);
+        var detail = await reviews.ReadForOperatorAsync(
+            alphaTenant, 94001, new string('A', 64), CancellationToken.None);
+        Check(detail is not null && detail.Text == secretText,
+            "authenticated manual review decrypts exact Cyrillic text");
+        var forbidden = await reviews.ReadForOperatorAsync(
+            Guid.Parse(Tenant2), 94001, new string('B', 64), CancellationToken.None);
+        Check(forbidden is null, "other tenant cannot decrypt review");
+
+        using var readOnly = await Get(server.Client,
+            "/operator/console/v1/reviews",
+            Jwt(Tenant1, "operator", "synthetic-review-alpha"));
+        using var otherReadOnly = await Get(server.Client,
+            "/operator/console/v1/reviews",
+            Jwt(Tenant2, "operator", "synthetic-review-beta"));
+        Check(readOnly.StatusCode == HttpStatusCode.OK
+            && otherReadOnly.StatusCode == HttpStatusCode.OK,
+            "signed JWT is required for review list");
+        using var detailHttp = await Get(server.Client,
+            "/operator/console/v1/reviews/94001",
+            Jwt(Tenant1, "operator", "synthetic-review-alpha"));
+        Check(detailHttp.StatusCode == HttpStatusCode.OK
+            && (await detailHttp.Content.ReadAsStringAsync())
+                .Contains(secretText, StringComparison.Ordinal),
+            "on-demand signed operator read exposes only requested test text");
+        using var foreignHttp = await Get(server.Client,
+            "/operator/console/v1/reviews/94001",
+            Jwt(Tenant2, "operator", "synthetic-review-beta"));
+        Check(foreignHttp.StatusCode == HttpStatusCode.NotFound,
+            "foreign JWT is denied decrypted review text");
+        using var unsigned = await Get(server.Client,
+            "/operator/console/v1/reviews/94001", null);
+        Check(unsigned.StatusCode == HttpStatusCode.Unauthorized,
+            "unsigned review decrypt endpoint returns 401");
         Check(own.Count == 1 && own[0].UpdateId == 94001 && foreign.Count == 0,
             "review list uses PostgreSQL tenant RLS");
         var intake = server.GetRequiredService<PostgresTelegramIntakeStore>();
@@ -441,6 +474,14 @@ static async Task VerifyEncryptedTelegramReviewAsync(
             && reader.GetInt32(1) == 12 && reader.GetInt32(2) == 16
             && reader.GetBoolean(3) && !await reader.ReadAsync(),
             "AES-GCM ciphertext, nonce, tag and TTL persisted without raw text");
+    }
+    await using (var auditDb = new NpgsqlConnection(adminConnection))
+    {
+        await auditDb.OpenAsync();
+        await using var auditCount = new NpgsqlCommand(
+            "SELECT count(*) FROM residentchat.telegram_review_reads", auditDb);
+        Check((long)(await auditCount.ExecuteScalarAsync())! == 2,
+            "two permitted decrypt operations append exactly two audit entries");
     }
     await using (var db = new NpgsqlConnection(runtimeConnection))
     {
@@ -864,6 +905,7 @@ static async Task SetupDatabaseAsync(string connection)
         GRANT SELECT, INSERT, UPDATE ON residentchat.tickets TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.telegram_intake TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.telegram_reviews TO residentchat_synthetic_app;
+        GRANT INSERT ON residentchat.telegram_review_reads TO residentchat_synthetic_app;
         GRANT SELECT, INSERT, UPDATE ON residentchat.operator_proposals TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.operator_proposal_decisions TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.ticket_audit TO residentchat_synthetic_app;

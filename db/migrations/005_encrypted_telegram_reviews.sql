@@ -26,3 +26,23 @@ CREATE POLICY tenant_isolation ON residentchat.telegram_reviews
 -- Runtime role needs only SELECT/INSERT, NEVER DELETE or table ownership.
 -- Owner-managed offline purge is required; query-time expiry alone is NOT erasure.
 -- GRANT SELECT, INSERT ON residentchat.telegram_reviews TO residentchat_runtime;
+
+-- Each explicit decrypted text read is audited, including the authenticated
+-- operator's pseudonymous actor fingerprint. Not a text-content log.
+CREATE TABLE IF NOT EXISTS residentchat.telegram_review_reads (
+    tenant_id uuid NOT NULL,
+    read_id uuid NOT NULL,
+    update_id bigint NOT NULL,
+    actor_hash char(64) NOT NULL CHECK (actor_hash ~ '^[0-9A-F]{64}$'),
+    accessed_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, read_id),
+    FOREIGN KEY (tenant_id, update_id)
+        REFERENCES residentchat.telegram_reviews(tenant_id, update_id)
+);
+ALTER TABLE residentchat.telegram_review_reads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE residentchat.telegram_review_reads FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON residentchat.telegram_review_reads;
+CREATE POLICY tenant_isolation ON residentchat.telegram_review_reads
+    USING (tenant_id = nullif(current_setting('residentchat.tenant_id', true), '')::uuid)
+    WITH CHECK (tenant_id = nullif(current_setting('residentchat.tenant_id', true), '')::uuid);
+-- GRANT INSERT ON residentchat.telegram_review_reads TO residentchat_runtime;

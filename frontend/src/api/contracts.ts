@@ -102,3 +102,54 @@ export function parseIntake(data: unknown): IntakeReceipt[] {
     };
   });
 }
+
+/** An encrypted, expiring review row. No group/user ID, text or chat hash. */
+export interface ReviewReceipt {
+  updateId: number;
+  reason: 1 | 2 | 3 | 4 | 5;
+  receivedAt: string;
+  expiresAt: string;
+}
+export interface ReviewDetail {
+  updateId: number;
+  reason: ReviewReceipt["reason"];
+  text: string;
+  expiresAt: string;
+}
+function reviewId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+function reviewReason(value: unknown): value is ReviewReceipt["reason"] {
+  return value === 1 || value === 2 || value === 3
+    || value === 4 || value === 5;
+}
+function isoDate(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 48
+    && !Number.isNaN(Date.parse(value));
+}
+export function parseReviews(data: unknown): ReviewReceipt[] {
+  if (!Array.isArray(data) || data.length > 50)
+    throw new Error("Неприпустимий список ручного розгляду");
+  const seen = new Set<number>();
+  return data.map(value => {
+    const v = object(value);
+    if (!reviewId(v.updateId) || seen.has(v.updateId)
+      || !reviewReason(v.reason) || !isoDate(v.receivedAt)
+      || !isoDate(v.expiresAt))
+      throw new Error("Неприпустимі метадані ручного розгляду");
+    seen.add(v.updateId);
+    return {
+      updateId: v.updateId, reason: v.reason,
+      receivedAt: v.receivedAt, expiresAt: v.expiresAt
+    };
+  });
+}
+export function parseReviewDetail(value: unknown, expectedId: number): ReviewDetail {
+  const v = object(value);
+  if (!reviewId(v.updateId) || v.updateId !== expectedId
+    || !reviewReason(v.reason) || !isoDate(v.expiresAt)
+    || typeof v.text !== "string" || v.text.length > 4096)
+    throw new Error("Неприпустимий результат розшифрування");
+  return { updateId: v.updateId, reason: v.reason,
+    text: v.text, expiresAt: v.expiresAt };
+}
