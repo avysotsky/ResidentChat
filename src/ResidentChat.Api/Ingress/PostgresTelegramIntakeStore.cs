@@ -125,7 +125,7 @@ public sealed class PostgresTelegramIntakeStore(
         {
             insert.Parameters.AddWithValue("tenant", NpgsqlDbType.Uuid, tenantId);
             insert.Parameters.AddWithValue("update", NpgsqlDbType.Bigint, telegramUpdateId);
-            insert.Parameters.AddWithValue("chat_hash", NpgsqlDbType.Char, groupHash);
+            insert.Parameters.AddWithValue("chat_hash", NpgsqlDbType.Text, groupHash);
             added = await insert.ExecuteScalarAsync(ct) is not null;
         }
 

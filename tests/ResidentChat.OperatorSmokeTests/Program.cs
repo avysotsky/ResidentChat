@@ -19,6 +19,10 @@ const string AuditKey = "SYNTHETIC_AUDIT_KEY_ONLY_1234567890_QWERTYZXCV";
 const string Tenant1 = "11111111-1111-4111-8111-111111111111";
 const string Tenant2 = "22222222-2222-4222-8222-222222222222";
 const string Outsider = "33333333-3333-4333-8333-333333333333";
+const string SyntheticTelegramSecret = "RC10_WEBHOOK_SYNTHETIC_KEY_0123456789_ABC";
+const string SyntheticHmacKey = "RC10_DISTINCT_CHAT_HMAC_KEY_0123456789_XYZ";
+const long AlphaChat = -1001234567890;
+const long BetaChat = -1009876543210;
 
 try
 {
@@ -378,6 +382,8 @@ try
             "console-approved ticket inaccessible to other tenant");
     }
 
+    await VerifyDurableTelegramIntakeAsync(adminConn!, appConn!);
+
     await VerifyRlsAsync(appConn!, Guid.Parse(Tenant1), Guid.Parse(Tenant2));
     Console.WriteLine("RC-02 PASS: JWT authorization, two-tenant HTTP isolation, PostgreSQL RLS and audit.");
     return 0;
@@ -387,6 +393,123 @@ catch (Exception error)
     // Deliberately never print payload, credentials, SQL parameters or identifiers.
     Console.Error.WriteLine("RC-02 FAIL: " + error.GetType().Name);
     return 1;
+}
+
+
+static async Task VerifyDurableTelegramIntakeAsync(
+    string adminConnection, string runtimeConnection)
+{
+    const string textValue = "TEST_PRIVATE_RESIDENT_TEXT_MUST_NOT_BE_STORED";
+    var alpha = JsonSerializer.Serialize(new {
+        update_id = 92001L,
+        message = new {
+            chat = new { id = AlphaChat, type = "supergroup" },
+            text = textValue
+        }
+    });
+    var beta = JsonSerializer.Serialize(new {
+        update_id = 92002L,
+        message = new {
+            chat = new { id = BetaChat, type = "supergroup" },
+            text = "synthetic elevator request"
+        }
+    });
+    await using (var incorrectlyMapped =
+        await StartAsync(runtimeConnection, true, true, durableIntake: true, badGroupMap: true))
+    {
+        using var failed = await PostWebhook(incorrectlyMapped.Client, alpha);
+        Check(failed.StatusCode == HttpStatusCode.ServiceUnavailable,
+            "incomplete tenant/group mapping refuses all durable admissions");
+    }
+
+    await using (var first =
+        await StartAsync(runtimeConnection, true, true, durableIntake: true))
+    {
+        using var alphaFirst = await PostWebhook(first.Client, alpha);
+        Check(alphaFirst.StatusCode == HttpStatusCode.OK
+            && (await alphaFirst.Content.ReadAsStringAsync()).Contains(
+                "\"accepted\"", StringComparison.Ordinal),
+            "real PG transaction commits before webhook 200");
+        using var alphaRepeat = await PostWebhook(first.Client, alpha);
+        Check(alphaRepeat.StatusCode == HttpStatusCode.OK
+            && (await alphaRepeat.Content.ReadAsStringAsync()).Contains(
+                "\"duplicate\"", StringComparison.Ordinal),
+            "Telegram retry is idempotent within same server process");
+        using var betaFirst = await PostWebhook(first.Client, beta);
+        Check(betaFirst.StatusCode == HttpStatusCode.OK,
+            "second tenant has a separate real PostgreSQL durable intake");
+        using var foreign = await PostWebhook(first.Client,
+            """{"update_id":92003,"message":{"chat":{"id":-1009999999999,"type":"supergroup"},"text":"ignored"}}""");
+        Check(foreign.StatusCode == HttpStatusCode.OK
+            && (await foreign.Content.ReadAsStringAsync()).Contains(
+                "\"ignored\"", StringComparison.Ordinal),
+            "unknown Telegram group never persists");
+    }
+
+    // Process restarted, in-memory dedup lost. PostgreSQL unique key persists.
+    await using (var restarted =
+        await StartAsync(runtimeConnection, true, true, durableIntake: true))
+    {
+        using var repeatAfterRestart = await PostWebhook(restarted.Client, alpha);
+        Check(repeatAfterRestart.StatusCode == HttpStatusCode.OK
+            && (await repeatAfterRestart.Content.ReadAsStringAsync()).Contains(
+                "\"duplicate\"", StringComparison.Ordinal),
+            "PostgreSQL deduplication survives API restart");
+    }
+
+    await using (var db = new NpgsqlConnection(adminConnection))
+    {
+        await db.OpenAsync();
+        await using var cmd = new NpgsqlCommand("""
+            SELECT tenant_id, update_id, chat_hash, state
+              FROM residentchat.telegram_intake ORDER BY update_id
+            """, db);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        Check(await reader.ReadAsync()
+            && reader.GetGuid(0) == Guid.Parse(Tenant1)
+            && reader.GetInt64(1) == 92001
+            && reader.GetString(2).Length == 64
+            && reader.GetInt16(3) == 1,
+            "only first tenant's metadata is stored (no resident text)");
+        Check(await reader.ReadAsync()
+            && reader.GetGuid(0) == Guid.Parse(Tenant2)
+            && reader.GetInt64(1) == 92002
+            && reader.GetString(2).Length == 64
+            && reader.GetInt16(3) == 1
+            && !await reader.ReadAsync(),
+            "exactly two metadata rows: no duplicate, foreign-group or hidden writes");
+    }
+
+    await using (var db = new NpgsqlConnection(runtimeConnection))
+    {
+        await db.OpenAsync();
+        await using (var deny = new NpgsqlCommand(
+            "SELECT count(*) FROM residentchat.telegram_intake", db))
+            Check((long)(await deny.ExecuteScalarAsync())! == 0,
+                "new table RLS default denies runtime without tenant scope");
+        await using var tx = await db.BeginTransactionAsync();
+        await using (var set = new NpgsqlCommand(
+            "SELECT set_config('residentchat.tenant_id', @tenant, true)", db, tx))
+        {
+            set.Parameters.AddWithValue("tenant", Tenant1);
+            await set.ExecuteNonQueryAsync();
+        }
+        await using (var one = new NpgsqlCommand(
+            "SELECT count(*) FROM residentchat.telegram_intake", db, tx))
+            Check((long)(await one.ExecuteScalarAsync())! == 1,
+                "RLS tenant Alpha cannot see Beta intake");
+        await tx.RollbackAsync();
+    }
+    Console.WriteLine("RC-10 PG PASS: durable Telegram ACK/dedup/restart, group mapping, RLS.");
+}
+
+static async Task<HttpResponseMessage> PostWebhook(HttpClient client, string json)
+{
+    using var message = new HttpRequestMessage(HttpMethod.Post, "/telegram/webhook");
+    message.Headers.TryAddWithoutValidation(
+        "X-Telegram-Bot-Api-Secret-Token", SyntheticTelegramSecret);
+    message.Content = new StringContent(json, Encoding.UTF8, "application/json");
+    return await client.SendAsync(message);
 }
 
 static async Task CheckTotalTicketsAsync(string adminConnection,
@@ -409,6 +532,11 @@ static async Task SetupDatabaseAsync(string connection)
     await using (var cmd = new NpgsqlCommand(migration, db))
         await cmd.ExecuteNonQueryAsync();
 
+    var intakeMigration = await File.ReadAllTextAsync(
+        Path.Combine(AppContext.BaseDirectory, "migrations", "003_telegram_intake.sql"));
+    await using (var cmd = new NpgsqlCommand(intakeMigration, db))
+        await cmd.ExecuteNonQueryAsync();
+
     await using (var grant = new NpgsqlCommand("""
         DO $do$
         BEGIN
@@ -419,6 +547,7 @@ static async Task SetupDatabaseAsync(string connection)
         $do$;
         GRANT USAGE ON SCHEMA residentchat TO residentchat_synthetic_app;
         GRANT SELECT, INSERT, UPDATE ON residentchat.tickets TO residentchat_synthetic_app;
+        GRANT SELECT, INSERT ON residentchat.telegram_intake TO residentchat_synthetic_app;
         GRANT SELECT, INSERT ON residentchat.ticket_audit TO residentchat_synthetic_app;
         GRANT USAGE, SELECT ON SEQUENCE residentchat.ticket_audit_id_seq
             TO residentchat_synthetic_app;
@@ -488,7 +617,8 @@ static void Check(bool value, string label)
 }
 
 static async Task<SyntheticServer> StartAsync(
-    string connection, bool enabled, bool configured, bool consoleEnabled = false)
+    string connection, bool enabled, bool configured, bool consoleEnabled = false,
+    bool durableIntake = false, bool badGroupMap = false)
 {
     var overrides = new Dictionary<string, string?>
     {
@@ -503,6 +633,20 @@ static async Task<SyntheticServer> StartAsync(
         ["ResidentChat:OperatorConsole:Enabled"] = consoleEnabled.ToString(),
         ["ResidentChat:OperatorConsole:Mode"] = consoleEnabled ? "synthetic-lab-only" : ""
     };
+    if (durableIntake)
+    {
+        overrides["ResidentChat:Telegram:Enabled"] = "true";
+        overrides["ResidentChat:Telegram:WebhookSecret"] = SyntheticTelegramSecret;
+        overrides["ResidentChat:Telegram:AllowedChatIds:0"] = AlphaChat.ToString();
+        overrides["ResidentChat:Telegram:AllowedChatIds:1"] = BetaChat.ToString();
+        overrides["ResidentChat:DurableIntake:Enabled"] = "true";
+        overrides["ResidentChat:DurableIntake:ChatHashHmacKey"] = SyntheticHmacKey;
+        overrides["ResidentChat:DurableIntake:Groups:0:ChatId"] = AlphaChat.ToString();
+        overrides["ResidentChat:DurableIntake:Groups:0:TenantId"] = Tenant1;
+        overrides["ResidentChat:DurableIntake:Groups:1:ChatId"] = BetaChat.ToString();
+        overrides["ResidentChat:DurableIntake:Groups:1:TenantId"] =
+            badGroupMap ? Outsider : Tenant2;
+    }
     var app = ResidentChatApp.Build([], overrides);
     app.Urls.Add("http://127.0.0.1:0");
     await app.StartAsync();
