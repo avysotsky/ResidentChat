@@ -1,8 +1,8 @@
-# ResidentChat — Telegram synthetic lab (NOT CONNECTED)
+# ResidentChat — Telegram synthetic lab (groups EXIST; bot connection NOT VERIFIED)
 
-Status: laboratory design only. Do not connect Telegram to the service, invite real residents, share actual messages or include production credentials in test artifacts.
+Owner confirmed that all three private laboratory Telegram groups already exist (2026-10-23). Do **not** create duplicate groups. RC-13 actual local C#↔Qwen acceptance and RC-14 synthetic HTTP webhook↔PostgreSQL acceptance passed on their pinned SHAs. **Neither test accessed the real Telegram Bot API or these groups.** No production or resident data, external models, or deployment are authorized.
 
-## Suggested private groups
+## Existing private test groups
 
 | Group name | Purpose | Synthetic messages |
 |---|---|---|
@@ -10,15 +10,15 @@ Status: laboratory design only. Do not connect Telegram to the service, invite r
 | ResidentChat LAB — ЖК Бета | Test tenant B: cross-tenant data isolation | Separate fabricated residents and incidents |
 | ResidentChat LAB — Модерация | Abuse, spam, conflicts, prompt injection | Test spam links, fictional emergencies, hostile instructions |
 
-### Manual Telegram preparation (owner-operated)
+### Next Telegram preparation (owner-operated, staged)
 
-1. In Telegram Desktop choose New Group (Новая группа).
-2. Use the exact laboratory name, make it private, set description: "СИНТЕТИЧНИЙ ТЕСТ: не писати персональні дані та реальні звернення мешканців".
-3. If Telegram demands an initial participant, use only another account you control or a consenting test participant, never an uninvolved resident.
-4. Keep all groups invitation-only. Do not post test links publicly.
-5. Do NOT add any ResidentChat bot, set webhooks, grant admin permissions or enter any real Telegram IDs/secrets yet.
+1. Reuse the **three existing** private groups; do not post invitation links or include real residents. The owner listed 'ЖК Альфа' (elevator, water, heating, FAQs, requests) and 'ЖК Бета' (separate tenant / RLS). 'Модерация' exists as a third group; its tenant ownership and purpose must be verified before it is mapped. Its owner-provided description currently repeats the Beta isolation description, so do not silently assume a third tenant ID.
+2. Check whether a dedicated *laboratory-only* bot already exists in Telegram @BotFather. If absent, owner creates one through BotFather. Never paste the token into chat, source control, shell history or logs.
+3. Initial integration is **Alpha only**, then Beta tenant isolation, then Moderation after its mapping is explicitly defined. Group IDs are obtained locally through narrowly scoped Bot API inspection after the bot is present, without printing any update texts or token. Never invent Telegram group IDs or tenant mappings.
+4. Telegram group Privacy Mode normally prevents bots from seeing ordinary messages. Before testing unrestricted resident-style text, explicitly configure BotFather Privacy Mode for the lab bot and re-add it when required. Do not grant admin rights unnecessarily. Keep Telegram `getUpdates` exclusive: if a webhook is configured, stop and diagnose rather than silently deleting it.
+5. First connection is manually opt-in, with valid local PostgreSQL encryption key/JWT/HMAC and the exact allowlisted Alpha group ID. The process remains off by default; no auto-approval, send/delete messages, or production use. Validate failure/rollback behaviour and audit before scaling to the remaining groups.
 
-Telegram Bot API does not create normal user groups on behalf of your account. Their initial creation is a UI/user action. Test groups can exist as empty shells while the program is tested entirely offline.
+The groups' existence alone does not establish a configured bot, chat IDs, permissions, polling credentials or consent to activate live polling.
 
 ## Synthetic matrix
 
@@ -37,9 +37,9 @@ Telegram Bot API does not create normal user groups on behalf of your account. T
 
 **Stage 1: automated WSL2 synthetic gate (ACTIVE).** Its fixed target is tests/ResidentChat.SmokeTests/ResidentChat.SmokeTests.csproj. It restores, builds and runs synthetic tests. Local AI transport is simulated using a fake HttpMessageHandler. No network call to Telegram or Ollama, no real messages, no cloud services.
 
-**Stage 2: optional manual local-model evaluation (PREPARED, NOT RUN).** Install a permitted local Ollama/Qwen model, check CPU/RAM, then explicitly run the synthetic CLI against HTTP loopback on the SAME host. This must never read a Telegram group or live resident data. It prints only category/urgency/status for five fictional fixtures. Stop if unavailable; no cloud fallback.
+**Stage 2: local-model and synthetic full-stack acceptance (PASSED).** Owner ran Windows Ollama `qwen3:1.7b` model-only semantic evaluation (6/6), then actual C# `LocalModelClassifier` over a temporary loopback-only WSL→Windows bridge (RC-13: 6/6, safety PASS), and HTTP synthetic Telegram webhook→real local Qwen→disposable PostgreSQL17→operator JWT endpoints (RC-14: PASS). These are **fictional fixtures only**, with no real Telegram or resident chats. See Draft PR #15 pinned results.
 
-**Stage 3: private Telegram integration (BLOCKED).** Requires separate authorization, tenant setup, user notice, operator identities, egress firewall, retained logs review, durable deduplication, incident escalation protocol and explicit decision to enable a test bot. This stage is not covered by WSL PASS.
+**Stage 3: private Telegram integration (NEXT, NOT ACTIVATED).** Requires an explicitly chosen dedicated bot, exact allowlisted group ID(s), safe local secrets, exclusive getUpdates with no active webhook, configured tenant/operator identities, failure/retry policy and staged owner opt-in. Start with synthetic-only Alpha, verify Beta isolation separately, and do not map Moderation until its purpose/tenant ownership is confirmed. The existing RC-14 PASS does not cover Telegram API permissions, real bot update delivery or interactive browser UX.
 
 ## WSL2 SHA protocol (AUTHORITATIVE)
 
