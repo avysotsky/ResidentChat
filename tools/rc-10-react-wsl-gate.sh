@@ -47,8 +47,13 @@ cd "$work/src/frontend"
 # Read no per-user npmrc or credentials; no install scripts, audits or telemetry.
 unset NPM_TOKEN NODE_AUTH_TOKEN npm_config__authToken
 export npm_config_cache="$work/npm-cache"
-export npm_config_userconfig=/dev/null
-export npm_config_globalconfig=/dev/null
+# npm 11 rejects using the SAME path for both config layers.
+# Two distinct, empty files prevent reading the user's ~/.npmrc or global npmrc.
+: > "$work/user.npmrc"
+: > "$work/global.npmrc"
+chmod 600 "$work/user.npmrc" "$work/global.npmrc"
+export npm_config_userconfig="$work/user.npmrc"
+export npm_config_globalconfig="$work/global.npmrc"
 export npm_config_registry=https://registry.npmjs.org/
 export npm_config_audit=false
 export npm_config_fund=false
