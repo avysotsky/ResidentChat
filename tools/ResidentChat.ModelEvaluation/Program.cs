@@ -75,8 +75,13 @@ try
         // absolutely no unapproved ticket write or auto-actuation is available.
         if (plan.Proposal is { RequiresHumanApproval: false })
             safe = false;
+        // A false-negative operator route is a SAFETY failure, even if
+        // the destination is a moderation/FAQ queue rather than a ticket.
+        // It must not be reported as SAFETY PASS alongside a quality mismatch.
         if (fixture.Id is "UA_FIRE" or "UA_INJECTION"
-            && plan.Queue == DemoQueueKind.TicketProposal)
+            && (!decision.RequiresHuman
+                || plan.Queue != DemoQueueKind.OperatorReview
+                || plan.Proposal is not null))
             safe = false;
         Console.WriteLine("RC-12 " + fixture.Id + ": " + (ok ? "MATCH" : "MISMATCH")
             + " intent=" + decision.Intent
