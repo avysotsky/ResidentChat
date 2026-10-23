@@ -52,8 +52,8 @@ public sealed class ClassifiedTelegramOptions
 /// Single-flight local-Qwen admission. No HTTP ACK or Telegram offset advance
 /// until classification AND intake+proposal metadata commit atomically.
 /// The model has no tools and is not allowed to authorize ticket creation.
-/// Unsupported/unclassified messages are NOT ACKed in this deliberately
-/// restricted maintenance-only experiment: they can be retried.
+/// Unsupported/unclassified messages require an encrypted review commit
+/// before ACK. Oversized messages cannot be admitted and are not ACKed.
 /// </summary>
 public sealed class ClassifiedTelegramPipeline(
     ClassifiedTelegramOptions options, DurableTelegramIntakeOptions intake,
@@ -71,9 +71,13 @@ public sealed class ClassifiedTelegramPipeline(
             || text.ValueKind != JsonValueKind.String)
             return null;
         var value = text.GetString();
+        // Preserve nonblank text up to the encrypted-review limit (4096).
+        // The 1500-character limit applies ONLY to Qwen inference. Longer
+        // messages go directly to human review without model execution.
+        // Never silently turn an oversized message into an empty review:
+        // AcceptAsync rejects >4096 instead of falsely ACKing content loss.
         return value is { Length: > 0 }
             && !string.IsNullOrWhiteSpace(value)
-            && value.Length <= LocalModelClassifier.MaxMessageChars
             ? value : null;
     }
 

@@ -416,6 +416,19 @@ static async Task VerifyEncryptedTelegramReviewAsync(
         Check(!await reviews.AcceptForReviewAsync(alphaTenant, 94001, AlphaChat,
             secretText, TelegramReviewReason.UncertainClassification,
             CancellationToken.None), "encrypted review duplicate is idempotent");
+        // Telegram allows text above the model's 1500-char budget.
+        // It must survive an actual encrypted PostgreSQL round trip.
+        var longText = new string('Ї', LocalModelClassifier.MaxMessageChars + 1);
+        Check(await reviews.AcceptForReviewAsync(alphaTenant, 94002, AlphaChat,
+            longText, TelegramReviewReason.UnsupportedMessage,
+            CancellationToken.None), "over-model-limit message admitted to encrypted review");
+        var longReadback = await reviews.ReadForOperatorAsync(
+            alphaTenant, 94002, new string('C', 64), CancellationToken.None);
+        Check(longReadback is not null && longReadback.Text == longText,
+            "1501-character Telegram message preserved exactly after AES-GCM decrypt");
+        Check(!PostgresTelegramReviewStore.IsValidText(new string('Z', 4097)),
+            "over-review-limit update must not be acknowledged as empty text");
+
         var own = await reviews.ListAsync(alphaTenant, CancellationToken.None);
         var foreign = await reviews.ListAsync(Guid.Parse(Tenant2), CancellationToken.None);
         var detail = await reviews.ReadForOperatorAsync(
@@ -451,7 +464,7 @@ static async Task VerifyEncryptedTelegramReviewAsync(
             "/operator/console/v1/reviews/94001", null);
         Check(unsigned.StatusCode == HttpStatusCode.Unauthorized,
             "unsigned review decrypt endpoint returns 401");
-        Check(own.Count == 1 && own[0].UpdateId == 94001 && foreign.Count == 0,
+        Check(own.Count == 2 && own.Any(x => x.UpdateId == 94001) && own.Any(x => x.UpdateId == 94002) && foreign.Count == 0,
             "review list uses PostgreSQL tenant RLS");
         var intake = server.GetRequiredService<PostgresTelegramIntakeStore>();
         Check(await intake.IsAlreadyHandledAsync(alphaTenant, 94001, AlphaChat,
@@ -480,8 +493,8 @@ static async Task VerifyEncryptedTelegramReviewAsync(
         await auditDb.OpenAsync();
         await using var auditCount = new NpgsqlCommand(
             "SELECT count(*) FROM residentchat.telegram_review_reads", auditDb);
-        Check((long)(await auditCount.ExecuteScalarAsync())! == 2,
-            "two permitted decrypt operations append exactly two audit entries");
+        Check((long)(await auditCount.ExecuteScalarAsync())! == 3,
+            "three permitted decrypt operations append exactly three audit entries");
     }
     await using (var db = new NpgsqlConnection(runtimeConnection))
     {

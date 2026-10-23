@@ -438,6 +438,19 @@ static void RunDurableProposalConfigurationLab()
         Check(ClassifiedTelegramPipeline.ExtractMessageText(doc.RootElement) is
             "У під'їзді прорвало водопровідну трубу",
             "RC-10 original Ukrainian text available only transiently to local model");
+    // A Telegram message can exceed the safe local-Qwen prompt size.
+    // Its plaintext MUST reach encrypted human review, not disappear.
+    foreach (var length in new[] { 1500, 1501, 4096, 4097 })
+    {
+        var sample = new string('Т', length);
+        using var update = JsonDocument.Parse(JsonSerializer.Serialize(
+            new { message = new { text = sample } }));
+        var extracted = ClassifiedTelegramPipeline.ExtractMessageText(update.RootElement);
+        Check(extracted == sample, "RC-10 Telegram text is never silently discarded at model/review boundaries");
+        Check(PostgresTelegramReviewStore.IsValidText(extracted) == (length <= 4096),
+            "RC-10 up to 4096 chars enter encrypted review; >4096 fail closed before ACK");
+    }
+
     using (var doc = JsonDocument.Parse(
         """{"update_id":100,"message":{"chat":{"id":-1001234567890,"type":"supergroup"},"photo":[{}]}}"""))
         Check(ClassifiedTelegramPipeline.ExtractMessageText(doc.RootElement) is null,
