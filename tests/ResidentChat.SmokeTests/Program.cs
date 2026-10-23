@@ -8,7 +8,6 @@ using Microsoft.Extensions.DependencyInjection;
 using ResidentChat.Api;
 using ResidentChat.Api.Operator;
 using ResidentChat.Api.Ingress;
-using ResidentChat.Api.Ingress;
 using Microsoft.Extensions.Configuration;
 using ResidentChat.Core.Ingress;
 using ResidentChat.Core.LocalAi;
