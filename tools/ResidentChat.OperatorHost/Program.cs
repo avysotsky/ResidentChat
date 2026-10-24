@@ -1,7 +1,4 @@
 using Npgsql;
-using System.Text;
-using System.Text.Json;
-using System.Security.Cryptography;
 using ResidentChat.Api;
 
 // RC-29 explicit owner-local READ-ONLY operator preview host.
@@ -15,44 +12,8 @@ const string SecretDir = "/run/rc29-secrets";
 
 try
 {
-    if (args.Length != 1
-        || args[0] is not ("--serve-owner-readonly" or "--mint-local-token"))
+    if (args.Length != 1 || args[0] != "--serve-owner-readonly")
         throw new InvalidOperationException("RC29 mode not explicitly selected.");
-
-    if (args[0] == "--mint-local-token")
-    {
-        var signingFile = Path.Combine(SecretDir, "rc28-operator-jwt");
-        if (!File.Exists(signingFile))
-            throw new InvalidOperationException("RC29 signing secret missing.");
-        string signingOnly = (await File.ReadAllTextAsync(signingFile)).Trim();
-        if (signingOnly.Length is < 96 or > 512 || !signingOnly.All(Uri.IsHexDigit))
-            throw new InvalidOperationException("RC29 invalid signing secret.");
-        var path = "/run/rc29-token/token.jwt";
-        if (!Directory.Exists("/run/rc29-token") || File.Exists(path))
-            throw new InvalidOperationException("RC29 token destination unavailable.");
-        var header = B64(JsonSerializer.SerializeToUtf8Bytes(new { alg = "HS256", typ = "JWT" }));
-        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var body = B64(JsonSerializer.SerializeToUtf8Bytes(new {
-            iss = Issuer, aud = Audience, sub = "rc29-owner-lab-operator",
-            tenant_id = Tenant, role = "operator",
-            jti = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)),
-            iat = now, nbf = now, exp = now + 900
-        }));
-        var payload = header + "." + body;
-        var signature = HMACSHA256.HashData(
-            Encoding.UTF8.GetBytes(signingOnly), Encoding.ASCII.GetBytes(payload));
-        string jwt = payload + "." + B64(signature);
-        await using (var output = new FileStream(path, FileMode.CreateNew,
-            FileAccess.Write, FileShare.None))
-        {
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            var bytes = Encoding.UTF8.GetBytes(jwt);
-            await output.WriteAsync(bytes);
-            CryptographicOperations.ZeroMemory(bytes);
-        }
-        Console.WriteLine("RC29_SHORT_LIVED_JWT_FILE_READY=YES");
-        return 0;
-    }
 
     static string ReadLocalSecret(string name, bool hex = true)
     {
@@ -120,7 +81,7 @@ try
 
     // Kestrel 127.0.0.1 is non-negotiable. WSL/Windows loopback forwarder
     // must be evaluated by the owner before any always-on deployment.
-    await using var app = ResidentChatApp.Build([], configuration);
+    using var app = ResidentChatApp.Build([], configuration);
     app.Urls.Add("http://127.0.0.1:18762");
     await app.RunAsync();
     return 0;
@@ -131,6 +92,3 @@ catch
     Console.Error.WriteLine("RC29_LOCAL_PREVIEW_START_FAIL_SAFE");
     return 1;
 }
-
-static string B64(byte[] input) =>
-    Convert.ToBase64String(input).TrimEnd('=').Replace('+', '-').Replace('/', '_');
