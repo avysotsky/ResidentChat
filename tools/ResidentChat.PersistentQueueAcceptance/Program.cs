@@ -334,9 +334,8 @@ try
         using var webhookDenied = await reader.Client.SendAsync(webhookPost);
         Require(webhookDenied.StatusCode == HttpStatusCode.MethodNotAllowed,
             "RC27 all webhook POSTs blocked even if later misconfigured");
-    }
-    if (persistentReact)
-    {
+        if (persistentReact)
+        {
         var protector = reader.Api.Services.GetRequiredService<IDataProtectionProvider>()
             .CreateProtector("ResidentChat.RC28.OwnerOnlyPersistenceProof.v1");
         var protectedValue = protector.Protect("RC28_PERSISTENCE_TEST_NO_RESIDENT_DATA");
@@ -368,6 +367,7 @@ try
             "RC28 every persisted DataProtection key is X509-encrypted");
         Console.WriteLine("RC28_X509_ENCRYPTED_KEYRING_PASS");
         Console.WriteLine("RC28_DP_CROSS_APP_RESTART_PASS");
+        }
     }
     finally
     {
