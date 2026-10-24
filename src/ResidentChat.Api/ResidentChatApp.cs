@@ -42,10 +42,15 @@ public static class ResidentChatApp
             string password = File.ReadAllText(passwordFile).Trim();
             if (password.Length is < 32 or > 512)
                 throw new InvalidOperationException("RC28 invalid certificate password.");
-            using var certificate = X509CertificateLoader.LoadPkcs12FromFile(
+            var certificate = X509CertificateLoader.LoadPkcs12FromFile(
                 pfx, password, X509KeyStorageFlags.EphemeralKeySet);
-            if (!certificate.HasPrivateKey)
-                throw new InvalidOperationException("RC28 certificate must have a private key.");
+            if (!certificate.HasPrivateKey
+                || certificate.NotBefore.ToUniversalTime() > DateTime.UtcNow
+                || certificate.NotAfter.ToUniversalTime() < DateTime.UtcNow.AddDays(120))
+                throw new InvalidOperationException("RC28 valid long-lived certificate required.");
+            // Hosted singleton owns disposal; never dispose certificate before
+            // DataProtection first activates its key encryptor.
+            builder.Services.AddSingleton(certificate);
             builder.Services.AddDataProtection()
                 .SetApplicationName("ResidentChat.OperatorLab.v1")
                 .PersistKeysToFileSystem(new DirectoryInfo(ring))
