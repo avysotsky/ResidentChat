@@ -24,6 +24,8 @@
     <ProjectReference Include="../../tools/ResidentChat.PersistentApiAcceptance/ResidentChat.PersistentApiAcceptance.csproj" />
     <!-- RC-26 compile-only: permanent operator queue owner test is never run by the watcher. -->
     <ProjectReference Include="../../tools/ResidentChat.PersistentQueueAcceptance/ResidentChat.PersistentQueueAcceptance.csproj" />
+    <!-- RC-29 local owner-only runtime compiles here; never starts in watcher. -->
+    <ProjectReference Include="../../tools/ResidentChat.OperatorHost/ResidentChat.OperatorHost.csproj" />
     <!-- Compile-only coverage: PostgreSQL acceptance executable is NOT run by the offline smoke gate. -->
     <ProjectReference Include="../ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj" />
   </ItemGroup>
