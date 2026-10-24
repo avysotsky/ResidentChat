@@ -268,6 +268,7 @@ try
     }
     // RC-27 read-only service configuration: no Telegram mode and no
     // ingress/durable proposal opt-in. Real GET is tenant-scoped by RLS.
+    string? protectedDpValue = null;
     var reader = await StartAsync(readOnly: true, encryptedKeys: persistentReact);
     try
     {
@@ -336,22 +337,33 @@ try
             "RC27 all webhook POSTs blocked even if later misconfigured");
         if (persistentReact)
         {
-        var protector = reader.Api.Services.GetRequiredService<IDataProtectionProvider>()
-            .CreateProtector("ResidentChat.RC28.OwnerOnlyPersistenceProof.v1");
-        var protectedValue = protector.Protect("RC28_PERSISTENCE_TEST_NO_RESIDENT_DATA");
-        Require(protector.Unprotect(protectedValue) ==
-            "RC28_PERSISTENCE_TEST_NO_RESIDENT_DATA",
-            "RC28 DataProtection can encrypt and decrypt a synthetic string");
-        // Separate application host, same X509 private key and durable ring.
+            var protector = reader.Api.Services.GetRequiredService<IDataProtectionProvider>()
+                .CreateProtector("ResidentChat.RC28.OwnerOnlyPersistenceProof.v1");
+            protectedDpValue = protector.Protect("RC28_PERSISTENCE_TEST_NO_RESIDENT_DATA");
+            Require(protector.Unprotect(protectedDpValue) ==
+                "RC28_PERSISTENCE_TEST_NO_RESIDENT_DATA",
+                "RC28 encryption and decryption in first ASP.NET host");
+        }
+    }
+    finally
+    {
+        reader.Client.Dispose();
+        await reader.Api.StopAsync();
+        await reader.Api.DisposeAsync();
+    }
+    if (persistentReact)
+    {
+        // First app is fully stopped and disposed BEFORE second host starts.
+        Require(!string.IsNullOrEmpty(protectedDpValue), "RC28 first app protected value absent");
         var restarted = await StartAsync(readOnly: true, encryptedKeys: true);
         try
         {
-            var otherProtector = restarted.Api.Services
+            var protector = restarted.Api.Services
                 .GetRequiredService<IDataProtectionProvider>()
                 .CreateProtector("ResidentChat.RC28.OwnerOnlyPersistenceProof.v1");
-            Require(otherProtector.Unprotect(protectedValue) ==
+            Require(protector.Unprotect(protectedDpValue) ==
                 "RC28_PERSISTENCE_TEST_NO_RESIDENT_DATA",
-                "RC28 a second ASP.NET10 instance decrypts the earlier protected value");
+                "RC28 second ASP.NET process-lifecycle decrypts earlier protected value");
         }
         finally
         {
@@ -364,16 +376,9 @@ try
         Require(ringFiles.Length is >= 1 and <= 10
             && ringFiles.All(name => File.ReadAllText(name).Contains(
                 "encryptedSecret", StringComparison.Ordinal)),
-            "RC28 every persisted DataProtection key is X509-encrypted");
+            "RC28 all persisted DataProtection key XML is X509 encrypted");
         Console.WriteLine("RC28_X509_ENCRYPTED_KEYRING_PASS");
         Console.WriteLine("RC28_DP_CROSS_APP_RESTART_PASS");
-        }
-    }
-    finally
-    {
-        reader.Client.Dispose();
-        await reader.Api.StopAsync();
-        await reader.Api.DisposeAsync();
     }
     var afterRead = await InspectAsync();
     Require(afterRead.Intakes == 1 && afterRead.Proposals == 1
