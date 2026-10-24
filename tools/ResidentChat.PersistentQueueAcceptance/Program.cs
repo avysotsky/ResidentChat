@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,7 +25,7 @@ const string SyntheticProposal = "26262626-2626-4626-8626-000000000026";
 try
 {
     if (args.Length != 1 ||
-        args[0] is not ("--persistent-queue-once" or "--persistent-queue-readonly"))
+        args[0] is not ("--persistent-queue-once" or "--persistent-queue-readonly" or "--react-dp-readonly"))
         throw new InvalidOperationException("RC26 one-shot mode required.");
     if (!File.Exists(Secret))
         throw new InvalidOperationException("RC26 local runtime credential missing.");
@@ -42,8 +43,15 @@ try
     Guid alphaId = Guid.Parse(Alpha);
     Guid proposalId = Guid.Parse(SyntheticProposal);
     string caseId = "RC-" + proposalId.ToString("N").ToUpperInvariant();
-    string signing = Convert.ToHexString(RandomNumberGenerator.GetBytes(48));
-    string audit = Convert.ToHexString(RandomNumberGenerator.GetBytes(48));
+    bool persistentReact = args[0] == "--react-dp-readonly";
+    string signing = persistentReact
+        ? (await File.ReadAllTextAsync("/run/secrets/rc28_jwt")).Trim()
+        : Convert.ToHexString(RandomNumberGenerator.GetBytes(48));
+    string audit = persistentReact
+        ? (await File.ReadAllTextAsync("/run/secrets/rc28_audit")).Trim()
+        : Convert.ToHexString(RandomNumberGenerator.GetBytes(48));
+    Require(signing.Length >= 96 && audit.Length >= 96 && signing != audit,
+        "RC28 local signing and audit keys must be distinct");
     string chatHmac = Convert.ToHexString(RandomNumberGenerator.GetBytes(48));
     string webhook = Convert.ToHexString(RandomNumberGenerator.GetBytes(48));
     string jwtA = Jwt(Alpha, signing);
@@ -86,7 +94,7 @@ try
     Require((initial.Intakes == 0 && initial.Proposals == 0)
         || (initial.Intakes == 1 && initial.Proposals == 1),
         "RC26 unexpected persistent tenant rows.");
-    if (args[0] == "--persistent-queue-readonly")
+    if (args[0] != "--persistent-queue-once")
         Require(initial.Intakes == 1 && initial.Proposals == 1,
             "RC27 readonly requires preexisting RC26 fixture; no writes permitted.");
     if (initial.Intakes == 0)
@@ -156,7 +164,8 @@ try
         Console.WriteLine("RC26_EXISTING_PENDING_PROPOSAL_REUSED=YES");
     }
 
-    async Task<(WebApplication Api, HttpClient Client)> StartAsync(bool readOnly = false)
+    async Task<(WebApplication Api, HttpClient Client)> StartAsync(
+        bool readOnly = false, bool encryptedKeys = false)
     {
         // The synthetic webhook gate must be configured for the DURABLE
         // proposal dependency, but NO Telegram credential or getUpdates
@@ -188,6 +197,16 @@ try
             ["ResidentChat:ClassifiedTelegram:Enabled"] = "false",
             ["ResidentChat:TelegramReview:Enabled"] = "false"
         };
+        if (encryptedKeys)
+        {
+            cfg["ResidentChat:PersistentDataProtection:Enabled"] = "true";
+            cfg["ResidentChat:PersistentDataProtection:KeyDirectory"] =
+                "/run/rc28-data-protection/keys";
+            cfg["ResidentChat:PersistentDataProtection:CertificatePath"] =
+                "/run/secrets/rc28_dp_cert";
+            cfg["ResidentChat:PersistentDataProtection:PasswordFile"] =
+                "/run/secrets/rc28_dp_password";
+        }
         var app = ResidentChatApp.Build([], cfg);
         app.Urls.Add("http://127.0.0.1:0");
         await app.StartAsync();
@@ -249,7 +268,7 @@ try
     }
     // RC-27 read-only service configuration: no Telegram mode and no
     // ingress/durable proposal opt-in. Real GET is tenant-scoped by RLS.
-    var reader = await StartAsync(readOnly: true);
+    var reader = await StartAsync(readOnly: true, encryptedKeys: persistentReact);
     try
     {
         await VerifyQueueAsync(reader.Client);
@@ -263,13 +282,34 @@ try
             "RC27 authenticated server advertises read-only mode");
 
         using var page = await reader.Client.GetAsync("/operator/console");
-        Require(page.StatusCode is HttpStatusCode.OK or HttpStatusCode.NotFound,
-            "RC27 read-only console either serves bundled React or fails closed");
+        Require(persistentReact
+                ? page.StatusCode == HttpStatusCode.OK
+                : page.StatusCode is HttpStatusCode.OK or HttpStatusCode.NotFound,
+            "RC28 bundled React required; RC27 fallback fail closed");
         if (page.StatusCode == HttpStatusCode.OK)
         {
             string html = await page.Content.ReadAsStringAsync();
             Require(!html.Contains("operator/console/app.js", StringComparison.Ordinal),
                 "RC27 cannot fall back to legacy synthetic mutation UI");
+            if (persistentReact)
+            {
+                Require(html.Contains("id=\"root\"", StringComparison.Ordinal),
+                    "RC28 React root exists");
+                var paths = System.Text.RegularExpressions.Regex.Matches(
+                    html, "/operator/console/assets/index-[A-Za-z0-9_-]+[.](?:js|css)")
+                    .Select(match => match.Value).Distinct().ToArray();
+                Require(paths.Length == 2 && paths.Any(x => x.EndsWith(".js", StringComparison.Ordinal))
+                    && paths.Any(x => x.EndsWith(".css", StringComparison.Ordinal)),
+                    "RC28 exact Vite JS/CSS assets");
+                foreach (string asset in paths)
+                {
+                    using var downloaded = await reader.Client.GetAsync(asset);
+                    Require(downloaded.StatusCode == HttpStatusCode.OK
+                        && (await downloaded.Content.ReadAsByteArrayAsync()).Length > 128,
+                        "RC28 same-origin hashed asset served by real Kestrel");
+                }
+                Console.WriteLine("RC28_REACT_BUNDLE_SAME_ORIGIN_PASS");
+            }
         }
         using var create = new HttpRequestMessage(HttpMethod.Post, "/operator/v1/tickets");
         create.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwtA);
@@ -294,6 +334,40 @@ try
         using var webhookDenied = await reader.Client.SendAsync(webhookPost);
         Require(webhookDenied.StatusCode == HttpStatusCode.MethodNotAllowed,
             "RC27 all webhook POSTs blocked even if later misconfigured");
+    }
+    if (persistentReact)
+    {
+        var protector = reader.Api.Services.GetRequiredService<IDataProtectionProvider>()
+            .CreateProtector("ResidentChat.RC28.OwnerOnlyPersistenceProof.v1");
+        var protectedValue = protector.Protect("RC28_PERSISTENCE_TEST_NO_RESIDENT_DATA");
+        Require(protector.Unprotect(protectedValue) ==
+            "RC28_PERSISTENCE_TEST_NO_RESIDENT_DATA",
+            "RC28 DataProtection can encrypt and decrypt a synthetic string");
+        // Separate application host, same X509 private key and durable ring.
+        var restarted = await StartAsync(readOnly: true, encryptedKeys: true);
+        try
+        {
+            var otherProtector = restarted.Api.Services
+                .GetRequiredService<IDataProtectionProvider>()
+                .CreateProtector("ResidentChat.RC28.OwnerOnlyPersistenceProof.v1");
+            Require(otherProtector.Unprotect(protectedValue) ==
+                "RC28_PERSISTENCE_TEST_NO_RESIDENT_DATA",
+                "RC28 a second ASP.NET10 instance decrypts the earlier protected value");
+        }
+        finally
+        {
+            restarted.Client.Dispose();
+            await restarted.Api.StopAsync();
+            await restarted.Api.DisposeAsync();
+        }
+        var ringFiles = Directory.EnumerateFiles(
+            "/run/rc28-data-protection/keys", "key-*.xml").ToArray();
+        Require(ringFiles.Length is >= 1 and <= 10
+            && ringFiles.All(name => File.ReadAllText(name).Contains(
+                "encryptedSecret", StringComparison.Ordinal)),
+            "RC28 every persisted DataProtection key is X509-encrypted");
+        Console.WriteLine("RC28_X509_ENCRYPTED_KEYRING_PASS");
+        Console.WriteLine("RC28_DP_CROSS_APP_RESTART_PASS");
     }
     finally
     {
