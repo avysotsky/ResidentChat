@@ -354,14 +354,15 @@ try
     if (persistentReact)
     {
         // First app is fully stopped and disposed BEFORE second host starts.
-        Require(!string.IsNullOrEmpty(protectedDpValue), "RC28 first app protected value absent");
+        string sealedValue = protectedDpValue
+            ?? throw new InvalidOperationException("RC28 first app protected value absent");
         var restarted = await StartAsync(readOnly: true, encryptedKeys: true);
         try
         {
             var protector = restarted.Api.Services
                 .GetRequiredService<IDataProtectionProvider>()
                 .CreateProtector("ResidentChat.RC28.OwnerOnlyPersistenceProof.v1");
-            Require(protector.Unprotect(protectedDpValue) ==
+            Require(protector.Unprotect(sealedValue) ==
                 "RC28_PERSISTENCE_TEST_NO_RESIDENT_DATA",
                 "RC28 second ASP.NET process-lifecycle decrypts earlier protected value");
         }
