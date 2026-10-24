@@ -190,7 +190,7 @@ export default function App() {
         if (session.current === expectedSession) setBusyCase(null);
       }
     })();
-  }, [blockedIds, refresh]);
+  }, [blockedIds, readOnly, refresh]);
 
   return (
     <main className="shell">
