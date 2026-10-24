@@ -53,6 +53,9 @@ public static class SyntheticConsoleApi
             if (!IsDirectLoopback(ctx)) return Results.NotFound();
             SetBrowserSecurityHeaders(ctx);
             var reactIndex = Path.Combine(AppContext.BaseDirectory, "operator-ui", "index.html");
+            // The legacy synthetic fallback exposes actionable controls.
+            // In RC-27 read-only mode it is NEVER served without built React.
+            if (config.ReadOnly && !File.Exists(reactIndex)) return Results.NotFound();
             return File.Exists(reactIndex)
                 ? Results.File(reactIndex, "text/html; charset=utf-8")
                 : Results.Content(SyntheticConsolePage.Html, "text/html; charset=utf-8");
@@ -76,14 +79,14 @@ public static class SyntheticConsoleApi
 
         app.MapGet("/operator/console/app.js", (HttpContext ctx) =>
         {
-            if (!IsDirectLoopback(ctx)) return Results.NotFound();
+            if (config.ReadOnly || !IsDirectLoopback(ctx)) return Results.NotFound();
             SetBrowserSecurityHeaders(ctx);
             return Results.Content(SyntheticConsolePage.JavaScript, "text/javascript; charset=utf-8");
         });
 
         app.MapGet("/operator/console/app.css", (HttpContext ctx) =>
         {
-            if (!IsDirectLoopback(ctx)) return Results.NotFound();
+            if (config.ReadOnly || !IsDirectLoopback(ctx)) return Results.NotFound();
             SetBrowserSecurityHeaders(ctx);
             return Results.Content(SyntheticConsolePage.Css, "text/css; charset=utf-8");
         });

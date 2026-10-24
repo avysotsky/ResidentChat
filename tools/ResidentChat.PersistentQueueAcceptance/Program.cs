@@ -263,8 +263,14 @@ try
             "RC27 authenticated server advertises read-only mode");
 
         using var page = await reader.Client.GetAsync("/operator/console");
-        Require(page.StatusCode == HttpStatusCode.OK,
-            "RC27 operator console can serve local React or fallback");
+        Require(page.StatusCode is HttpStatusCode.OK or HttpStatusCode.NotFound,
+            "RC27 read-only console either serves bundled React or fails closed");
+        if (page.StatusCode == HttpStatusCode.OK)
+        {
+            string html = await page.Content.ReadAsStringAsync();
+            Require(!html.Contains("operator/console/app.js", StringComparison.Ordinal),
+                "RC27 cannot fall back to legacy synthetic mutation UI");
+        }
         using var create = new HttpRequestMessage(HttpMethod.Post, "/operator/v1/tickets");
         create.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwtA);
         create.Content = new StringContent(
