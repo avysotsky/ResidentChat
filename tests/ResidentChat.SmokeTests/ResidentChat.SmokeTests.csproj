@@ -20,6 +20,8 @@
     <ProjectReference Include="../ResidentChat.OperatorSmokeTests/ResidentChat.OperatorSmokeTests.csproj" />
     <!-- Compile-only RC-24: permanent DB runtime probe is NEVER run in offline watcher. -->
     <ProjectReference Include="../../tools/ResidentChat.PersistentDbProbe/ResidentChat.PersistentDbProbe.csproj" />
+    <!-- RC-25 compile only: real permanent DB API proof needs explicit owner action. -->
+    <ProjectReference Include="../../tools/ResidentChat.PersistentApiAcceptance/ResidentChat.PersistentApiAcceptance.csproj" />
     <!-- Compile-only coverage: PostgreSQL acceptance executable is NOT run by the offline smoke gate. -->
     <ProjectReference Include="../ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj" />
   </ItemGroup>
