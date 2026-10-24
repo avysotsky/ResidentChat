@@ -240,14 +240,49 @@ if(!((major===22&&minor>=12)||major===24))process.exit(2);
  export NODE_ENV=development
  export NODE_OPTIONS=--max-old-space-size=512
  unset NPM_TOKEN NODE_AUTH_TOKEN npm_config__authToken
- echo 'RC29_OWNER_REACT_BUILD_STARTED'
+ # npm ci ignores lifecycle scripts. Only this package-unpack phase runs
+ # under the owner UID; all dependency code execution (test/tsc/Vite)
+ # runs inside an offline Docker filesystem without owner secrets.
+ echo 'RC29_OWNER_REACT_DEPENDENCIES_INSTALL_STARTED'
  (
   cd "$work/src/frontend"
   timeout 240 npm ci --ignore-scripts --no-audit --no-fund \
    --fetch-retries=1 --fetch-timeout=15000
-  timeout 240 npm run check
-  timeout 60 npm run verify:bundle
  )
+ echo 'RC29_OWNER_REACT_DEPENDENCIES_INSTALL_PASS'
+ command -v readlink >/dev/null || { echo 'RC29_NOT_RUN=READLINK_MISSING'; exit 2; }
+ node_real="$(readlink -f "$(command -v node)")"
+ npm_real="$(readlink -f "$(command -v npm)")"
+ npm_root="${npm_real%/bin/npm-cli.js}"
+ [[ -f "$node_real" && -x "$node_real" && "$npm_root" != "$npm_real" &&
+    -f "$npm_root/bin/npm-cli.js" ]] || {
+  echo 'RC29_NOT_RUN=NODE_NPM_RUNTIME_NOT_PORTABLE'; exit 2;
+ }
+ mkdir -m 700 "$work/runner-bin"
+ ln -s /usr/local/bin/node "$work/runner-bin/node"
+ cat > "$work/runner-bin/npm" <<'RC29_NPM_WRAPPER'
+#!/bin/sh
+exec /usr/local/bin/node /rc29-npm/bin/npm-cli.js "$@"
+RC29_NPM_WRAPPER
+ chmod 700 "$work/runner-bin/npm"
+ echo 'RC29_ISOLATED_REACT_CHECK_STARTED'
+ timeout 300 docker run --rm --pull never \
+  --network none --read-only --cpus 2 --memory 1g --memory-swap 1g \
+  --pids-limit 128 --cap-drop ALL --security-opt no-new-privileges:true \
+  --user "$(id -u):$(id -g)" --workdir /work/src/frontend \
+  --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+  --mount "type=bind,src=$work/src,dst=/work/src" \
+  --mount "type=bind,src=$work/runner-bin,dst=/work/runner-bin,readonly" \
+  --mount "type=bind,src=$node_real,dst=/usr/local/bin/node,readonly" \
+  --mount "type=bind,src=$npm_root,dst=/rc29-npm,readonly" \
+  -e HOME=/tmp -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+  -e NODE_OPTIONS=--max-old-space-size=512 \
+  -e PATH=/work/runner-bin:/usr/local/bin:/usr/bin:/bin \
+  "$sdk" /bin/bash -c '
+   set -Eeuo pipefail
+   timeout 240 npm run check
+   timeout 60 npm run verify:bundle'
+ echo 'RC29_ISOLATED_REACT_CHECK_PASS'
  echo 'RC29_OWNER_REACT_BUILD_PASS'
  echo 'RC29_OFFLINE_OPERATOR_HOST_PUBLISH_STARTED'
  timeout 300 docker run --rm --pull never \
