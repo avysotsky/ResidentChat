@@ -7,14 +7,15 @@ if [[ $# != 1 || ! "$1" =~ ^[a-f0-9]{40}$ || "$(id -u)" == 0 ]]; then
  echo 'RC28_NOT_RUN=PINNED_SHA_NONROOT_REQUIRED'; exit 2
 fi
 sha="$1"
+owner_home="$HOME"
 mirror=/home/user/ResidentChatPRAutotest/source.git
 lock=/home/user/WSLAutotest/execution.lock
 nuget=/home/user/ResidentChatPRAutotest/nuget
 sdk=jobradar-pr-autotest:dotnet10
 pg=residentchat-pg17
 sock=residentchat-pg17-socket
-secrets="$HOME/.local/share/residentchat/secrets"
-ring="$HOME/.local/share/residentchat/data-protection/keys"
+secrets="$owner_home/.local/share/residentchat/secrets"
+ring="$owner_home/.local/share/residentchat/data-protection/keys"
 pgpass="$secrets/pg-runtime-password"
 pfx="$secrets/rc28-dp-certificate.pfx"
 pfxpass="$secrets/rc28-dp-password"
@@ -137,10 +138,10 @@ cp -a "$work/src/frontend/dist/." "$work/src/.rc28-acceptance/operator-ui/"
 echo 'RC28_DOTNET_REACT_BUNDLE_READY=YES'
 
 # Owner WSL home (saved across WSL restarts); never checked into Git.
-real_secrets="$HOME/.local/share/residentchat/secrets"
-real_ring="$HOME/.local/share/residentchat/data-protection/keys"
-mkdir -p "$real_secrets" "$HOME/.local/share/residentchat/data-protection"
-chmod 700 "$real_secrets" "$HOME/.local/share/residentchat/data-protection"
+real_secrets="$owner_home/.local/share/residentchat/secrets"
+real_ring="$owner_home/.local/share/residentchat/data-protection/keys"
+mkdir -p "$real_secrets" "$owner_home/.local/share/residentchat/data-protection"
+chmod 700 "$real_secrets" "$owner_home/.local/share/residentchat/data-protection"
 secrets="$real_secrets"
 ring="$real_ring"
 pfx="$secrets/rc28-dp-certificate.pfx"
