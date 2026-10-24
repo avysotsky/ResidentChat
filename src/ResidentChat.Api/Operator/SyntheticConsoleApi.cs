@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Npgsql;
 using ResidentChat.Api.Operator;
+using ResidentChat.Api.Ingress;
 using ResidentChat.Core.Demo;
 using ResidentChat.Core.LocalAi;
 
@@ -20,10 +21,17 @@ public static class SyntheticConsoleApi
     public static void Register(WebApplicationBuilder builder)
     {
         var config = builder.Configuration.GetSection("ResidentChat:OperatorConsole");
-        var enabled = config.GetValue<bool>("Enabled")
-            && string.Equals(config["Mode"], "synthetic-lab-only", StringComparison.Ordinal);
-        builder.Services.AddSingleton(new SyntheticConsoleOptions(enabled));
+        bool persistentReadOnly = config.GetValue<bool>("Enabled")
+            && string.Equals(config["Mode"], "persistent-lab-readonly", StringComparison.Ordinal)
+            && builder.Configuration.GetValue<bool>("ResidentChat:PersistentReadOnly:Enabled");
+        bool synthetic = config.GetValue<bool>("Enabled")
+            && string.Equals(config["Mode"], "synthetic-lab-only", StringComparison.Ordinal)
+            && !builder.Configuration.GetValue<bool>("ResidentChat:PersistentReadOnly:Enabled");
+        builder.Services.AddSingleton(new SyntheticConsoleOptions(
+            synthetic || persistentReadOnly, persistentReadOnly));
         builder.Services.AddSingleton<SyntheticConsoleInbox>();
+        builder.Services.AddSingleton(sp => new PostgresOperatorQueueReadStore(
+            sp.GetRequiredService<OperatorOptions>().ConnectionString ?? ""));
     }
 
     public static void Map(WebApplication app)
@@ -45,6 +53,9 @@ public static class SyntheticConsoleApi
             if (!IsDirectLoopback(ctx)) return Results.NotFound();
             SetBrowserSecurityHeaders(ctx);
             var reactIndex = Path.Combine(AppContext.BaseDirectory, "operator-ui", "index.html");
+            // The legacy synthetic fallback exposes actionable controls.
+            // In RC-27 read-only mode it is NEVER served without built React.
+            if (config.ReadOnly && !File.Exists(reactIndex)) return Results.NotFound();
             return File.Exists(reactIndex)
                 ? Results.File(reactIndex, "text/html; charset=utf-8")
                 : Results.Content(SyntheticConsolePage.Html, "text/html; charset=utf-8");
@@ -68,19 +79,25 @@ public static class SyntheticConsoleApi
 
         app.MapGet("/operator/console/app.js", (HttpContext ctx) =>
         {
-            if (!IsDirectLoopback(ctx)) return Results.NotFound();
+            if (config.ReadOnly || !IsDirectLoopback(ctx)) return Results.NotFound();
             SetBrowserSecurityHeaders(ctx);
             return Results.Content(SyntheticConsolePage.JavaScript, "text/javascript; charset=utf-8");
         });
 
         app.MapGet("/operator/console/app.css", (HttpContext ctx) =>
         {
-            if (!IsDirectLoopback(ctx)) return Results.NotFound();
+            if (config.ReadOnly || !IsDirectLoopback(ctx)) return Results.NotFound();
             SetBrowserSecurityHeaders(ctx);
             return Results.Content(SyntheticConsolePage.Css, "text/css; charset=utf-8");
         });
 
         var group = app.MapGroup("/operator/console/v1").RequireAuthorization();
+        group.MapGet("/mode", (HttpContext ctx) =>
+        {
+            if (!IsDirectLoopback(ctx)) return Results.NotFound();
+            SetNoStore(ctx);
+            return Results.Ok(new { readOnly = config.ReadOnly });
+        });
         group.MapGet("/proposals", async (HttpContext ctx,
             SyntheticConsoleInbox inbox, OperatorOptions options) =>
         {
@@ -88,10 +105,97 @@ public static class SyntheticConsoleApi
             if (!OperatorAccess.TryGetScope(ctx.User, options, out var tenant, out _))
                 return Results.Forbid();
 
+            if (config.ReadOnly)
+            {
+                var reader = ctx.RequestServices
+                    .GetRequiredService<PostgresOperatorQueueReadStore>();
+                SetNoStore(ctx);
+                try { return Results.Ok(await reader.ListAsync(tenant, ctx.RequestAborted)); }
+                catch (Exception ex) when (ex is NpgsqlException or IOException
+                    or InvalidOperationException or TimeoutException)
+                {
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+                }
+            }
+
+            var durableMode = ctx.RequestServices.GetRequiredService<DurableProposalOptions>();
+            if (durableMode.Enabled)
+            {
+                if (!durableMode.Ready) return Results.StatusCode(
+                    StatusCodes.Status503ServiceUnavailable);
+                var dbProposals = ctx.RequestServices
+                    .GetRequiredService<PostgresDurableProposalStore>();
+                SetNoStore(ctx);
+                return Results.Ok(await dbProposals.ListAsync(tenant, ctx.RequestAborted));
+            }
+
             var items = await inbox.GetAsync(tenant, options, ctx.RequestAborted);
             SetNoStore(ctx);
             return Results.Ok(items);
         });
+
+        // This is a distinct READ-ONLY list of committed Telegram metadata,
+        // not a queue of classified/approvable tickets. Opt-in test mode only.
+        var durable = app.Services.GetRequiredService<DurableTelegramIntakeOptions>();
+        if (durable.Ready)
+        {
+            group.MapGet("/intake", async (HttpContext ctx,
+                PostgresTelegramIntakeStore store, OperatorOptions settings) =>
+            {
+                if (!IsDirectLoopback(ctx)) return Results.NotFound();
+                if (!OperatorAccess.TryGetScope(ctx.User, settings, out var tenant, out _))
+                    return Results.Forbid();
+                SetNoStore(ctx);
+                var recent = await store.ListRecentAsync(tenant, ctx.RequestAborted);
+                return Results.Ok(recent);
+            });
+        }
+
+        // Only the signed, loopback operator can retrieve decrypted text.
+        // Listing never decrypts; individual reads create pseudonymous audit.
+        var reviews = app.Services.GetRequiredService<TelegramReviewOptions>();
+        if (reviews.Ready)
+        {
+            group.MapGet("/reviews", async (HttpContext ctx,
+                PostgresTelegramReviewStore store, OperatorOptions settings) =>
+            {
+                if (!IsDirectLoopback(ctx)) return Results.NotFound();
+                if (!OperatorAccess.TryGetScope(ctx.User, settings, out var tenant, out _))
+                    return Results.Forbid();
+                SetNoStore(ctx);
+                try { return Results.Ok(await store.ListAsync(tenant, ctx.RequestAborted)); }
+                catch (Exception ex) when (ex is NpgsqlException or IOException
+                    or InvalidOperationException or TimeoutException)
+                {
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+                }
+            });
+            group.MapGet("/reviews/{updateId:long}", async (long updateId,
+                HttpContext ctx, PostgresTelegramReviewStore store,
+                OperatorOptions settings) =>
+            {
+                if (!IsDirectLoopback(ctx)) return Results.NotFound();
+                if (!OperatorAccess.TryGetScope(ctx.User, settings,
+                    out var tenant, out var actor))
+                    return Results.Forbid();
+                if (updateId < 0) return Results.NotFound();
+                SetNoStore(ctx);
+                try
+                {
+                    var detail = await store.ReadForOperatorAsync(
+                        tenant, updateId, actor, ctx.RequestAborted);
+                    return detail is null ? Results.NotFound() : Results.Ok(detail);
+                }
+                catch (Exception ex) when (ex is NpgsqlException or IOException
+                    or InvalidOperationException or TimeoutException)
+                {
+                    // No ciphertext/decryption/SQL error details in response.
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+                }
+            });
+        }
+
+        if (config.ReadOnly) return; // RC-27 does not register either mutating route.
 
         group.MapPost("/proposals/{caseId}/approve",
             (string caseId, HttpContext ctx, SyntheticConsoleInbox inbox,
@@ -113,6 +217,39 @@ public static class SyntheticConsoleApi
 
         var (confirmation, error) = await ReadConfirmationAsync(ctx);
         if (error is not null) return error;
+
+        SetNoStore(ctx);
+        var durableMode = ctx.RequestServices.GetRequiredService<DurableProposalOptions>();
+        if (durableMode.Enabled)
+        {
+            if (!durableMode.Ready) return Results.StatusCode(
+                StatusCodes.Status503ServiceUnavailable);
+            var durableStore = ctx.RequestServices
+                .GetRequiredService<PostgresDurableProposalStore>();
+            try
+            {
+                var outcome = await durableStore.ChangeAsync(
+                    tenant, caseId, confirmation, approve, actor, ctx.RequestAborted);
+                return outcome switch
+                {
+                    DurableProposalChangeResult.Approved =>
+                        Results.Ok(new { status = "Approved" }),
+                    DurableProposalChangeResult.Rejected =>
+                        Results.Ok(new { status = "Rejected" }),
+                    DurableProposalChangeResult.Missing => Results.NotFound(),
+                    DurableProposalChangeResult.Invalid => Results.BadRequest(),
+                    _ => Results.Conflict(new { error = "already_processed" })
+                };
+            }
+            catch (Exception ex) when (ex is NpgsqlException or IOException
+                or TimeoutException or InvalidOperationException
+                or OperationCanceledException)
+            {
+                // The commit result may be ambiguous. No automatic POST retry;
+                // client may refresh the durable list for read-only reconciliation.
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+        }
 
         SetNoStore(ctx);
         var result = await inbox.ChangeAsync(tenant, options, caseId,
@@ -191,7 +328,7 @@ public static class SyntheticConsoleApi
     }
 }
 
-public sealed record SyntheticConsoleOptions(bool Enabled);
+public sealed record SyntheticConsoleOptions(bool Enabled, bool ReadOnly = false);
 public sealed record SyntheticConsoleItem(
     string CaseId, string Category, string Priority, string State,
     Guid? TicketId = null);

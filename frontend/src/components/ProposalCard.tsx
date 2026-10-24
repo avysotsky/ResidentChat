@@ -5,13 +5,14 @@ import { getTicket } from "../api/operatorApi";
 interface Props {
   proposal: Proposal;
   busy: boolean;
+  readOnly: boolean;
   blocked: boolean;
   refreshVersion: number;
   sessionVersion: number;
   onAction: (proposal: Proposal, action: "approve" | "reject") => void;
 }
 export function ProposalCard({
-  proposal, busy, blocked, refreshVersion, sessionVersion, onAction
+  proposal, busy, readOnly, blocked, refreshVersion, sessionVersion, onAction
 }: Props) {
   const [readback, setReadback] = useState<TicketReadback | null>(null);
   const [readError, setReadError] = useState("");
@@ -83,7 +84,10 @@ export function ProposalCard({
           перевірте серверний стан без повторного надсилання.
         </p>
       )}
-      {pending && (
+      {pending && readOnly && (
+        <p className="muted small" role="status">Лише перегляд: затвердження та відхилення вимкнено.</p>
+      )}
+      {pending && !readOnly && (
         <div className="actions">
           <button type="button" disabled={busy || blocked}
             onClick={() => onAction(proposal, "approve")}>Підтвердити</button>

@@ -9,5 +9,9 @@
   <ItemGroup>
     <ProjectReference Include="../../src/ResidentChat.Api/ResidentChat.Api.csproj" />
     <Content Include="../../db/migrations/001_ticket_workflow.sql" Link="migrations/001_ticket_workflow.sql" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../db/migrations/003_telegram_intake.sql" Link="migrations/003_telegram_intake.sql" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../db/migrations/004_operator_proposals.sql" Link="migrations/004_operator_proposals.sql" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../db/migrations/005_encrypted_telegram_reviews.sql" Link="migrations/005_encrypted_telegram_reviews.sql" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../db/migrations/006_telegram_poll_cursor.sql" Link="migrations/006_telegram_poll_cursor.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

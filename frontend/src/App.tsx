@@ -1,15 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Proposal } from "./api/contracts";
+import type { Proposal, IntakeReceipt, ReviewReceipt } from "./api/contracts";
 import {
-  changeProposal, clearSyntheticToken, getProposals, OperatorHttpError,
+  changeProposal, clearSyntheticToken, getProposals, getIntake, getReviews,
+  getOperatorReadOnlyMode, OperatorHttpError,
   hasSyntheticToken, useSyntheticToken
 } from "./api/operatorApi";
 import { OperatorLogin } from "./components/OperatorLogin";
 import { ProposalList } from "./components/ProposalList";
+import { TelegramIntakePanel } from "./components/TelegramIntakePanel";
+import { TelegramReviewsPanel } from "./components/TelegramReviewsPanel";
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(false);
+  const [readOnly, setReadOnly] = useState(true);
   const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [intakeItems, setIntakeItems] = useState<IntakeReceipt[]>([]);
+  const [intakeMessage, setIntakeMessage] = useState("");
+  const [reviewItems, setReviewItems] = useState<ReviewReceipt[]>([]);
+  const [reviewMessage, setReviewMessage] = useState("");
   const [feedback, setFeedback] = useState("Очікуємо тестову авторизацію оператора.");
   const [loading, setLoading] = useState(false);
   const [busyCase, setBusyCase] = useState<string | null>(null);
@@ -26,7 +34,12 @@ export default function App() {
     activeRead.current = null;
     clearSyntheticToken();
     setAuthenticated(false);
+    setReadOnly(true);
     setProposals([]);
+    setIntakeItems([]);
+    setIntakeMessage("");
+    setReviewItems([]);
+    setReviewMessage("");
     setBlockedIds(new Set());
     setBusyCase(null);
     setLoading(false);
@@ -56,9 +69,46 @@ export default function App() {
     activeRead.current = controller;
     setLoading(true);
     try {
+      // Never enable mutation buttons unless the JWT-authenticated backend
+      // explicitly confirms this is a writable synthetic-only session.
+      let permittedWrite = false;
+      try { permittedWrite = !(await getOperatorReadOnlyMode(controller.signal)); }
+      catch (error: unknown) {
+        if (error instanceof OperatorHttpError
+          && (error.status === 401 || error.status === 403)) throw error;
+      }
       const items = await getProposals(controller.signal);
+      let intake: IntakeReceipt[] = [];
+      let intakeNotice = "";
+      try {
+        intake = await getIntake(controller.signal);
+      } catch (error: unknown) {
+        // The opt-in endpoint deliberately returns 404 when disabled.
+        // Auth revocation must clear the entire session, not just intake.
+        if (error instanceof OperatorHttpError
+          && (error.status === 401 || error.status === 403)) throw error;
+        intakeNotice = error instanceof OperatorHttpError && error.status === 404
+          ? "Тестове приймання Telegram зараз вимкнено."
+          : "Метадані Telegram недоступні; перевірте PostgreSQL окремо.";
+      }
+      let reviews: ReviewReceipt[] = [];
+      let reviewNotice = "";
+      try {
+        reviews = await getReviews(controller.signal);
+      } catch (error: unknown) {
+        if (error instanceof OperatorHttpError
+          && (error.status === 401 || error.status === 403)) throw error;
+        reviewNotice = error instanceof OperatorHttpError && error.status === 404
+          ? "Ручний розгляд Telegram наразі вимкнений."
+          : "Чергу ручного розгляду зараз не прочитано.";
+      }
       if (session.current !== expectedSession || controller.signal.aborted) return false;
+      setReviewItems(reviews);
+      setReviewMessage(reviewNotice);
+      setIntakeItems(intake);
+      setIntakeMessage(intakeNotice);
       setProposals(items);
+      setReadOnly(!permittedWrite);
       setAuthenticated(true);
       setRefreshVersion(n => n + 1);
       return true;
@@ -66,6 +116,10 @@ export default function App() {
       if (session.current !== expectedSession || controller.signal.aborted) return false;
       // Never retain a prior tenant's queue when a signed JWT fails.
       setProposals([]);
+      setIntakeItems([]);
+      setIntakeMessage("");
+      setReviewItems([]);
+      setReviewMessage("");
       if (error instanceof OperatorHttpError && (error.status === 401 || error.status === 403)) {
         clearSyntheticToken();
         setAuthenticated(false);
@@ -98,7 +152,7 @@ export default function App() {
   }, [disconnect, refresh]);
 
   const act = useCallback((proposal: Proposal, action: "approve" | "reject") => {
-    if (actionInFlight.current || !hasSyntheticToken() || blockedIds.has(proposal.caseId)
+    if (readOnly || actionInFlight.current || !hasSyntheticToken() || blockedIds.has(proposal.caseId)
       || proposal.state !== "Pending") return;
     const message = action === "approve"
       ? "Створити синтетичну заявку PostgreSQL для " + proposal.caseId + "?"
@@ -136,7 +190,7 @@ export default function App() {
         if (session.current === expectedSession) setBusyCase(null);
       }
     })();
-  }, [blockedIds, refresh]);
+  }, [blockedIds, readOnly, refresh]);
 
   return (
     <main className="shell">
@@ -158,7 +212,11 @@ export default function App() {
           disconnect();
         }} />
       <p className="feedback" role="status" aria-live="polite">{feedback}</p>
-      <ProposalList proposals={proposals} authenticated={authenticated}
+      <TelegramIntakePanel authenticated={authenticated} loading={loading}
+        items={intakeItems} message={intakeMessage} />
+      {authenticated && <TelegramReviewsPanel key={sessionVersion}
+        items={reviewItems} message={reviewMessage} />}
+      <ProposalList readOnly={readOnly} proposals={proposals} authenticated={authenticated}
         loading={loading} busy={busyCase !== null} blockedIds={blockedIds}
         refreshVersion={refreshVersion} sessionVersion={sessionVersion}
         onRefresh={() => void refresh().then(ok => {

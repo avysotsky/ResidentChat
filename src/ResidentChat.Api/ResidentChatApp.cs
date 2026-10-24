@@ -1,6 +1,10 @@
 using System.Text.Json;
+using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using ResidentChat.Core.Ingress;
+using ResidentChat.Api.Ingress;
+using Npgsql;
 using ResidentChat.Api.Operator;
 
 namespace ResidentChat.Api;
@@ -18,6 +22,40 @@ public static class ResidentChatApp
         var builder = WebApplication.CreateBuilder(args);
         if (configurationOverrides is not null)
             builder.Configuration.AddInMemoryCollection(configurationOverrides);
+
+        // RC-28 opt-in: persist DataProtection's cryptographic key ring in
+        // a host-private directory and encrypt keys with an owner-local
+        // certificate. No fallback to plaintext or process-ephemeral keys
+        // when this mode is explicitly enabled.
+        if (builder.Configuration.GetValue<bool>("ResidentChat:PersistentDataProtection:Enabled"))
+        {
+            var root = builder.Configuration.GetSection("ResidentChat:PersistentDataProtection");
+            string ring = root["KeyDirectory"] ?? "";
+            string pfx = root["CertificatePath"] ?? "";
+            string passwordFile = root["PasswordFile"] ?? "";
+            if (!Path.IsPathFullyQualified(ring)
+                || !Path.IsPathFullyQualified(pfx)
+                || !Path.IsPathFullyQualified(passwordFile)
+                || !Directory.Exists(ring)
+                || !File.Exists(pfx) || !File.Exists(passwordFile))
+                throw new InvalidOperationException("RC28 persistent key files not provisioned.");
+            string password = File.ReadAllText(passwordFile).Trim();
+            if (password.Length is < 32 or > 512)
+                throw new InvalidOperationException("RC28 invalid certificate password.");
+            var certificate = X509CertificateLoader.LoadPkcs12FromFile(
+                pfx, password, X509KeyStorageFlags.EphemeralKeySet);
+            if (!certificate.HasPrivateKey
+                || certificate.NotBefore.ToUniversalTime() > DateTime.UtcNow
+                || certificate.NotAfter.ToUniversalTime() < DateTime.UtcNow.AddDays(120))
+                throw new InvalidOperationException("RC28 valid long-lived certificate required.");
+            // Hosted singleton owns disposal; never dispose certificate before
+            // DataProtection first activates its key encryptor.
+            builder.Services.AddSingleton(certificate);
+            builder.Services.AddDataProtection()
+                .SetApplicationName("ResidentChat.OperatorLab.v1")
+                .PersistKeysToFileSystem(new DirectoryInfo(ring))
+                .ProtectKeysWithCertificate(certificate);
+        }
 
         // Defense in depth: Kestrel rejects excessive bodies even when Content-Length is absent.
         builder.WebHost.ConfigureKestrel(options =>
@@ -38,25 +76,90 @@ public static class ResidentChatApp
         // No external AI providers or message-forwarding dependencies are registered.
         OperatorApi.Register(builder);
         SyntheticConsoleApi.Register(builder);
+
+        // RC-10: never enabled implicitly. Durable intake is tenant-bound
+        // to the validated operator PostgreSQL role/configuration.
+        builder.Services.AddSingleton(sp => DurableTelegramIntakeOptions.Create(
+            builder.Configuration, policy, sp.GetRequiredService<OperatorOptions>()));
+        builder.Services.AddSingleton(sp => new PostgresTelegramIntakeStore(
+            sp.GetRequiredService<OperatorOptions>().ConnectionString ?? "",
+            sp.GetRequiredService<DurableTelegramIntakeOptions>()));
+
+        // The PC does not expose a public webhook when optional long polling
+        // is chosen. Both live intake and polling stay DISABLED by default.
+        builder.Services.AddSingleton(sp => TelegramPollingOptions.Create(
+            builder.Configuration, sp.GetRequiredService<DurableTelegramIntakeOptions>()));
+        builder.Services.AddHostedService<TelegramLongPollingWorker>();
+
+        builder.Services.AddSingleton(sp => DurableProposalOptions.Create(
+            builder.Configuration, sp.GetRequiredService<OperatorOptions>(),
+            sp.GetRequiredService<DurableTelegramIntakeOptions>()));
+        builder.Services.AddSingleton(sp => new PostgresDurableProposalStore(
+            sp.GetRequiredService<OperatorOptions>().ConnectionString ?? "",
+            sp.GetRequiredService<DurableProposalOptions>()));
+        builder.Services.AddSingleton(sp => ClassifiedTelegramOptions.Create(
+            builder.Configuration,
+            sp.GetRequiredService<DurableTelegramIntakeOptions>(),
+            sp.GetRequiredService<DurableProposalOptions>(),
+            sp.GetRequiredService<TelegramReviewOptions>()));
+        builder.Services.AddSingleton(sp => TelegramReviewOptions.Create(
+            builder.Configuration, sp.GetRequiredService<DurableTelegramIntakeOptions>()));
+        builder.Services.AddSingleton(sp => new PostgresTelegramReviewStore(
+            sp.GetRequiredService<OperatorOptions>().ConnectionString ?? "",
+            sp.GetRequiredService<TelegramReviewOptions>(),
+            sp.GetRequiredService<DurableTelegramIntakeOptions>(),
+            sp.GetRequiredService<PostgresTelegramIntakeStore>()));
+        builder.Services.AddSingleton<ClassifiedTelegramPipeline>();
         builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Routing.EndpointMiddleware", LogLevel.Warning);
         builder.Logging.AddFilter("Microsoft.AspNetCore.Http.Result", LogLevel.Warning);
 
         var app = builder.Build();
+        // RC-27: permanent operator UI is read-only at the HTTP boundary,
+        // including direct ticket POST, synthetic webhook and all other
+        // methods capable of mutation. No metadata-only Telegram admission.
+        if (builder.Configuration.GetValue<bool>("ResidentChat:PersistentReadOnly:Enabled"))
+        {
+            app.Use(async (ctx, next) =>
+            {
+                if (!HttpMethods.IsGet(ctx.Request.Method)
+                    && !HttpMethods.IsHead(ctx.Request.Method))
+                {
+                    ctx.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
+                    return;
+                }
+                await next(ctx);
+            });
+        }
         app.UseAuthentication();
         app.UseAuthorization();
         OperatorApi.Map(app);
         SyntheticConsoleApi.Map(app);
         app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-        // No Telegram outbound calls, local/remote AI calls, message storage or processing yet.
+        // Explicit experimental local-classification mode is OFF by default.
+        // No external LLM or unauthenticated ticket creation is permitted.
         app.MapPost("/telegram/webhook", async (HttpContext context,
-            TelegramIngressPolicy ingress, BoundedUpdateDeduplicator dedup) =>
+            TelegramIngressPolicy ingress, BoundedUpdateDeduplicator dedup,
+            DurableTelegramIntakeOptions intake, PostgresTelegramIntakeStore store,
+            TelegramPollingOptions polling,
+            ClassifiedTelegramOptions classified,
+            ClassifiedTelegramPipeline pipeline) =>
         {
+            // Never accept a webhook in a process configured for getUpdates,
+            // including incomplete polling config; fail closed to 404.
+            if (polling.Enabled) return Results.NotFound();
             if (!ingress.Enabled)
                 return Results.NotFound();
 
             if (!ingress.Ready)
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+
+            // Explicit opt-in with incomplete tenant, database or HMAC config
+            // must not silently fall back to the volatile demo deduplicator.
+            if (intake.Enabled && !intake.Ready)
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            if (classified.Enabled && !classified.Ready)
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
 
             if (!context.Request.Headers.TryGetValue(SecretHeader, out var values)
@@ -87,11 +190,14 @@ public static class ResidentChatApp
                 return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
 
             TelegramUpdateResult parsed;
+            string? text = null;
             try
             {
                 using JsonDocument json = JsonDocument.Parse(body,
                     new JsonDocumentOptions { MaxDepth = 16 });
                 parsed = TelegramUpdateInspector.Inspect(json.RootElement);
+                if (classified.Enabled && parsed.Kind == TelegramParseKind.GroupMessage)
+                    text = ClassifiedTelegramPipeline.ExtractMessageText(json.RootElement);
             }
             catch (JsonException)
             {
@@ -109,6 +215,36 @@ public static class ResidentChatApp
             if (parsed.Kind != TelegramParseKind.GroupMessage
                 || !ingress.IsAllowedGroup(parsed.ChatId))
                 return Results.Ok(new { status = "ignored" });
+
+            if (intake.Enabled)
+            {
+                if (!intake.TryResolveTenant(parsed.ChatId, out var tenantId))
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+
+                try
+                {
+                    // Mode A: synthetic metadata-only (existing behavior).
+                    // Mode B: real local Qwen classification followed by
+                    // ATOMIC intake+proposal commit before acknowledging.
+                    var inserted = classified.Enabled
+                        ? await pipeline.AcceptAsync(
+                            tenantId, parsed.UpdateId, parsed.ChatId,
+                            text, context.RequestAborted)
+                        : await store.AcceptAsync(
+                            tenantId, parsed.UpdateId, parsed.ChatId,
+                            context.RequestAborted);
+                    return inserted
+                        ? Results.Ok(new { status = "accepted" })
+                        : Results.Ok(new { status = "duplicate" });
+                }
+                catch (Exception ex) when (ex is NpgsqlException or IOException
+                    or TimeoutException or InvalidOperationException
+                    or OperationCanceledException)
+                {
+                    // Never log input, database errors, tokens or private chat IDs.
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+                }
+            }
 
             return dedup.TryAccept(parsed.UpdateId)
                 ? Results.Ok(new { status = "accepted" })

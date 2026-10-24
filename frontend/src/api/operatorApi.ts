@@ -1,5 +1,5 @@
-import { parseProposals, parseTicket } from "./contracts.ts";
-import type { Proposal, TicketReadback } from "./contracts";
+import { parseProposals, parseTicket, parseIntake, parseReviews, parseReviewDetail } from "./contracts.ts";
+import type { Proposal, TicketReadback, IntakeReceipt, ReviewReceipt, ReviewDetail } from "./contracts";
 
 // A fictional short-lived lab JWT lives ONLY in JS module memory.
 // Never use cookie, localStorage, sessionStorage, URL, telemetry or logs.
@@ -48,6 +48,14 @@ async function json(path: string, signal?: AbortSignal, confirmation?: string): 
   if (!response.ok) throw new OperatorHttpError(response.status);
   return await response.json() as unknown;
 }
+/** Fail closed to read-only when the host does not supply a valid mode flag. */
+export async function getOperatorReadOnlyMode(signal?: AbortSignal): Promise<boolean> {
+  const value = await json("/operator/console/v1/mode", signal);
+  if (value === null || typeof value !== "object" || Array.isArray(value)
+    || typeof (value as { readOnly?: unknown }).readOnly !== "boolean")
+    throw new Error("Невідома політика змін оператора");
+  return (value as { readOnly: boolean }).readOnly;
+}
 export async function getProposals(signal?: AbortSignal): Promise<Proposal[]> {
   return parseProposals(await json("/operator/console/v1/proposals", signal));
 }
@@ -69,4 +77,20 @@ export async function changeProposal(
 }
 export async function getTicket(id: string, signal?: AbortSignal): Promise<TicketReadback> {
   return parseTicket(await json("/operator/v1/tickets/" + encodeURIComponent(id), signal), id);
+}
+
+/** Read-only, signed and tenant-scoped. The endpoint exists only in test mode. */
+export async function getIntake(signal?: AbortSignal): Promise<IntakeReceipt[]> {
+  return parseIntake(await json("/operator/console/v1/intake", signal));
+}
+
+/** No review text is fetched on page load; detail is explicit operator action. */
+export async function getReviews(signal?: AbortSignal): Promise<ReviewReceipt[]> {
+  return parseReviews(await json("/operator/console/v1/reviews", signal));
+}
+export async function getReviewDetail(id: number, signal?: AbortSignal): Promise<ReviewDetail> {
+  if (!Number.isSafeInteger(id) || id < 0)
+    throw new Error("Некоректний Telegram update ID");
+  return parseReviewDetail(await json(
+    "/operator/console/v1/reviews/" + String(id), signal), id);
 }

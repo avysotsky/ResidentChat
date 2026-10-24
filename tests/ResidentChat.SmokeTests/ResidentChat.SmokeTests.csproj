@@ -12,10 +12,20 @@
     <ProjectReference Include="../../tools/ResidentChat.LocalLab/ResidentChat.LocalLab.csproj" />
     <!-- RC-07: build synthetic JWT issuer, never run it in standard smoke tests. -->
     <ProjectReference Include="../../tools/ResidentChat.LocalLabToken/ResidentChat.LocalLabToken.csproj" />
+    <!-- Compile-only: real Qwen evaluation is NEVER executed by the smoke watcher. -->
+    <ProjectReference Include="../../tools/ResidentChat.ModelEvaluation/ResidentChat.ModelEvaluation.csproj" />
     <!-- Compile the opt-in synthetic operator demo during the ordinary WSL build. -->
     <ProjectReference Include="../../tools/ResidentChat.Demo/ResidentChat.Demo.csproj" />
     <!-- Compile-only: live synthetic OperatorSmokeTests execute in separate isolated PostgreSQL. -->
     <ProjectReference Include="../ResidentChat.OperatorSmokeTests/ResidentChat.OperatorSmokeTests.csproj" />
+    <!-- Compile-only RC-24: permanent DB runtime probe is NEVER run in offline watcher. -->
+    <ProjectReference Include="../../tools/ResidentChat.PersistentDbProbe/ResidentChat.PersistentDbProbe.csproj" />
+    <!-- RC-25 compile only: real permanent DB API proof needs explicit owner action. -->
+    <ProjectReference Include="../../tools/ResidentChat.PersistentApiAcceptance/ResidentChat.PersistentApiAcceptance.csproj" />
+    <!-- RC-26 compile-only: permanent operator queue owner test is never run by the watcher. -->
+    <ProjectReference Include="../../tools/ResidentChat.PersistentQueueAcceptance/ResidentChat.PersistentQueueAcceptance.csproj" />
+    <!-- RC-29 local owner-only runtime compiles here; never starts in watcher. -->
+    <ProjectReference Include="../../tools/ResidentChat.OperatorHost/ResidentChat.OperatorHost.csproj" />
     <!-- Compile-only coverage: PostgreSQL acceptance executable is NOT run by the offline smoke gate. -->
     <ProjectReference Include="../ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj" />
   </ItemGroup>
