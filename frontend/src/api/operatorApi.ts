@@ -48,6 +48,14 @@ async function json(path: string, signal?: AbortSignal, confirmation?: string): 
   if (!response.ok) throw new OperatorHttpError(response.status);
   return await response.json() as unknown;
 }
+/** Fail closed to read-only when the host does not supply a valid mode flag. */
+export async function getOperatorReadOnlyMode(signal?: AbortSignal): Promise<boolean> {
+  const value = await json("/operator/console/v1/mode", signal);
+  if (value === null || typeof value !== "object" || Array.isArray(value)
+    || typeof (value as { readOnly?: unknown }).readOnly !== "boolean")
+    throw new Error("Невідома політика змін оператора");
+  return (value as { readOnly: boolean }).readOnly;
+}
 export async function getProposals(signal?: AbortSignal): Promise<Proposal[]> {
   return parseProposals(await json("/operator/console/v1/proposals", signal));
 }

@@ -7,6 +7,7 @@ interface Props {
   authenticated: boolean;
   loading: boolean;
   busy: boolean;
+  readOnly: boolean;
   blockedIds: ReadonlySet<string>;
   refreshVersion: number;
   sessionVersion: number;
@@ -21,7 +22,7 @@ const labels: Record<Filter, string> = {
 };
 
 export function ProposalList({
-  proposals, authenticated, loading, busy, blockedIds,
+  proposals, authenticated, loading, busy, readOnly, blockedIds,
   refreshVersion, sessionVersion, onRefresh, onAction
 }: Props) {
   const [filter, setFilter] = useState<Filter>("All");
@@ -62,7 +63,7 @@ export function ProposalList({
         : <div className="proposal-grid">
           {visible.map(proposal => (
             <ProposalCard key={sessionVersion + ":" + proposal.caseId}
-              proposal={proposal} busy={busy || loading}
+              proposal={proposal} busy={busy || loading} readOnly={readOnly}
               blocked={blockedIds.has(proposal.caseId)}
               refreshVersion={refreshVersion} sessionVersion={sessionVersion}
               onAction={onAction} />

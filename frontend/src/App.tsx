@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Proposal, IntakeReceipt, ReviewReceipt } from "./api/contracts";
 import {
-  changeProposal, clearSyntheticToken, getProposals, getIntake, getReviews, OperatorHttpError,
+  changeProposal, clearSyntheticToken, getProposals, getIntake, getReviews,
+  getOperatorReadOnlyMode, OperatorHttpError,
   hasSyntheticToken, useSyntheticToken
 } from "./api/operatorApi";
 import { OperatorLogin } from "./components/OperatorLogin";
@@ -11,6 +12,7 @@ import { TelegramReviewsPanel } from "./components/TelegramReviewsPanel";
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(false);
+  const [readOnly, setReadOnly] = useState(true);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [intakeItems, setIntakeItems] = useState<IntakeReceipt[]>([]);
   const [intakeMessage, setIntakeMessage] = useState("");
@@ -32,6 +34,7 @@ export default function App() {
     activeRead.current = null;
     clearSyntheticToken();
     setAuthenticated(false);
+    setReadOnly(true);
     setProposals([]);
     setIntakeItems([]);
     setIntakeMessage("");
@@ -66,6 +69,14 @@ export default function App() {
     activeRead.current = controller;
     setLoading(true);
     try {
+      // Never enable mutation buttons unless the JWT-authenticated backend
+      // explicitly confirms this is a writable synthetic-only session.
+      let permittedWrite = false;
+      try { permittedWrite = !(await getOperatorReadOnlyMode(controller.signal)); }
+      catch (error: unknown) {
+        if (error instanceof OperatorHttpError
+          && (error.status === 401 || error.status === 403)) throw error;
+      }
       const items = await getProposals(controller.signal);
       let intake: IntakeReceipt[] = [];
       let intakeNotice = "";
@@ -97,6 +108,7 @@ export default function App() {
       setIntakeItems(intake);
       setIntakeMessage(intakeNotice);
       setProposals(items);
+      setReadOnly(!permittedWrite);
       setAuthenticated(true);
       setRefreshVersion(n => n + 1);
       return true;
@@ -140,7 +152,7 @@ export default function App() {
   }, [disconnect, refresh]);
 
   const act = useCallback((proposal: Proposal, action: "approve" | "reject") => {
-    if (actionInFlight.current || !hasSyntheticToken() || blockedIds.has(proposal.caseId)
+    if (readOnly || actionInFlight.current || !hasSyntheticToken() || blockedIds.has(proposal.caseId)
       || proposal.state !== "Pending") return;
     const message = action === "approve"
       ? "Створити синтетичну заявку PostgreSQL для " + proposal.caseId + "?"
@@ -204,7 +216,7 @@ export default function App() {
         items={intakeItems} message={intakeMessage} />
       {authenticated && <TelegramReviewsPanel key={sessionVersion}
         items={reviewItems} message={reviewMessage} />}
-      <ProposalList proposals={proposals} authenticated={authenticated}
+      <ProposalList readOnly={readOnly} proposals={proposals} authenticated={authenticated}
         loading={loading} busy={busyCase !== null} blockedIds={blockedIds}
         refreshVersion={refreshVersion} sessionVersion={sessionVersion}
         onRefresh={() => void refresh().then(ok => {
