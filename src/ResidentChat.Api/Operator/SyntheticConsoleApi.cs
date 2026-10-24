@@ -21,10 +21,17 @@ public static class SyntheticConsoleApi
     public static void Register(WebApplicationBuilder builder)
     {
         var config = builder.Configuration.GetSection("ResidentChat:OperatorConsole");
-        var enabled = config.GetValue<bool>("Enabled")
-            && string.Equals(config["Mode"], "synthetic-lab-only", StringComparison.Ordinal);
-        builder.Services.AddSingleton(new SyntheticConsoleOptions(enabled));
+        bool persistentReadOnly = config.GetValue<bool>("Enabled")
+            && string.Equals(config["Mode"], "persistent-lab-readonly", StringComparison.Ordinal)
+            && builder.Configuration.GetValue<bool>("ResidentChat:PersistentReadOnly:Enabled");
+        bool synthetic = config.GetValue<bool>("Enabled")
+            && string.Equals(config["Mode"], "synthetic-lab-only", StringComparison.Ordinal)
+            && !builder.Configuration.GetValue<bool>("ResidentChat:PersistentReadOnly:Enabled");
+        builder.Services.AddSingleton(new SyntheticConsoleOptions(
+            synthetic || persistentReadOnly, persistentReadOnly));
         builder.Services.AddSingleton<SyntheticConsoleInbox>();
+        builder.Services.AddSingleton(sp => new PostgresOperatorQueueReadStore(
+            sp.GetRequiredService<OperatorOptions>().ConnectionString ?? ""));
     }
 
     public static void Map(WebApplication app)
@@ -82,12 +89,31 @@ public static class SyntheticConsoleApi
         });
 
         var group = app.MapGroup("/operator/console/v1").RequireAuthorization();
+        group.MapGet("/mode", (HttpContext ctx) =>
+        {
+            if (!IsDirectLoopback(ctx)) return Results.NotFound();
+            SetNoStore(ctx);
+            return Results.Ok(new { readOnly = config.ReadOnly });
+        });
         group.MapGet("/proposals", async (HttpContext ctx,
             SyntheticConsoleInbox inbox, OperatorOptions options) =>
         {
             if (!IsDirectLoopback(ctx)) return Results.NotFound();
             if (!OperatorAccess.TryGetScope(ctx.User, options, out var tenant, out _))
                 return Results.Forbid();
+
+            if (config.ReadOnly)
+            {
+                var reader = ctx.RequestServices
+                    .GetRequiredService<PostgresOperatorQueueReadStore>();
+                SetNoStore(ctx);
+                try { return Results.Ok(await reader.ListAsync(tenant, ctx.RequestAborted)); }
+                catch (Exception ex) when (ex is NpgsqlException or IOException
+                    or InvalidOperationException or TimeoutException)
+                {
+                    return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+                }
+            }
 
             var durableMode = ctx.RequestServices.GetRequiredService<DurableProposalOptions>();
             if (durableMode.Enabled)
@@ -165,6 +191,8 @@ public static class SyntheticConsoleApi
                 }
             });
         }
+
+        if (config.ReadOnly) return; // RC-27 does not register either mutating route.
 
         group.MapPost("/proposals/{caseId}/approve",
             (string caseId, HttpContext ctx, SyntheticConsoleInbox inbox,
@@ -297,7 +325,7 @@ public static class SyntheticConsoleApi
     }
 }
 
-public sealed record SyntheticConsoleOptions(bool Enabled);
+public sealed record SyntheticConsoleOptions(bool Enabled, bool ReadOnly = false);
 public sealed record SyntheticConsoleItem(
     string CaseId, string Category, string Priority, string State,
     Guid? TicketId = null);

@@ -79,6 +79,22 @@ public static class ResidentChatApp
         builder.Logging.AddFilter("Microsoft.AspNetCore.Http.Result", LogLevel.Warning);
 
         var app = builder.Build();
+        // RC-27: permanent operator UI is read-only at the HTTP boundary,
+        // including direct ticket POST, synthetic webhook and all other
+        // methods capable of mutation. No metadata-only Telegram admission.
+        if (builder.Configuration.GetValue<bool>("ResidentChat:PersistentReadOnly:Enabled"))
+        {
+            app.Use(async (ctx, next) =>
+            {
+                if (!HttpMethods.IsGet(ctx.Request.Method)
+                    && !HttpMethods.IsHead(ctx.Request.Method))
+                {
+                    ctx.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
+                    return;
+                }
+                await next(ctx);
+            });
+        }
         app.UseAuthentication();
         app.UseAuthorization();
         OperatorApi.Map(app);
