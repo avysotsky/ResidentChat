@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using ResidentChat.Core.Ingress;
 using ResidentChat.Api.Ingress;
@@ -20,6 +22,35 @@ public static class ResidentChatApp
         var builder = WebApplication.CreateBuilder(args);
         if (configurationOverrides is not null)
             builder.Configuration.AddInMemoryCollection(configurationOverrides);
+
+        // RC-28 opt-in: persist DataProtection's cryptographic key ring in
+        // a host-private directory and encrypt keys with an owner-local
+        // certificate. No fallback to plaintext or process-ephemeral keys
+        // when this mode is explicitly enabled.
+        if (builder.Configuration.GetValue<bool>("ResidentChat:PersistentDataProtection:Enabled"))
+        {
+            var root = builder.Configuration.GetSection("ResidentChat:PersistentDataProtection");
+            string ring = root["KeyDirectory"] ?? "";
+            string pfx = root["CertificatePath"] ?? "";
+            string passwordFile = root["PasswordFile"] ?? "";
+            if (!Path.IsPathFullyQualified(ring)
+                || !Path.IsPathFullyQualified(pfx)
+                || !Path.IsPathFullyQualified(passwordFile)
+                || !Directory.Exists(ring)
+                || !File.Exists(pfx) || !File.Exists(passwordFile))
+                throw new InvalidOperationException("RC28 persistent key files not provisioned.");
+            string password = File.ReadAllText(passwordFile).Trim();
+            if (password.Length is < 32 or > 512)
+                throw new InvalidOperationException("RC28 invalid certificate password.");
+            using var certificate = X509CertificateLoader.LoadPkcs12FromFile(
+                pfx, password, X509KeyStorageFlags.EphemeralKeySet);
+            if (!certificate.HasPrivateKey)
+                throw new InvalidOperationException("RC28 certificate must have a private key.");
+            builder.Services.AddDataProtection()
+                .SetApplicationName("ResidentChat.OperatorLab.v1")
+                .PersistKeysToFileSystem(new DirectoryInfo(ring))
+                .ProtectKeysWithCertificate(certificate);
+        }
 
         // Defense in depth: Kestrel rejects excessive bodies even when Content-Length is absent.
         builder.WebHost.ConfigureKestrel(options =>
