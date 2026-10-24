@@ -310,6 +310,8 @@ docker run -d --pull never --name "$name" \
  --mount "type=bind,src=$sign,dst=/run/rc29-secrets/rc28-operator-jwt,readonly" \
  --mount "type=bind,src=$audit,dst=/run/rc29-secrets/rc28-operator-audit,readonly" \
  -e DOTNET_CLI_HOME=/tmp/dotnet-home \
+ -e ASPNETCORE_ENVIRONMENT=Production \
+ -e ASPNETCORE_URLS=http://127.0.0.1:18762 \
  -e DOTNET_CLI_TELEMETRY_OPTOUT=1 -e DOTNET_NOLOGO=1 \
  --log-driver local --log-opt max-size=4m --log-opt max-file=2 \
  "$sdk" dotnet /app/ResidentChat.OperatorHost.dll --serve-owner-readonly >/dev/null
@@ -333,6 +335,27 @@ mutate="$(curl --noproxy '*' -s --max-time 5 -X POST \
 [[ "$status" == 200 && "$unauth" == 401 && "$mutate" == 405 ]] || {
  echo 'RC29_STOP=LOCAL_HTTP_POLICY_CHECK_FAILED_CONTAINER_PRESERVED'; exit 3
 }
+# Index and assets must come from React 19 Vite, not legacy fallback.
+index_html="$(curl --noproxy '*' --fail -s --max-time 5 "http://127.0.0.1:$port/operator/console")" || {
+ echo 'RC29_STOP=REACT_INDEX_UNAVAILABLE'; exit 3;
+}
+grep -q 'id="root"' <<< "$index_html" || {
+ echo 'RC29_STOP=REACT_MOUNT_ROOT_MISSING'; exit 3;
+}
+assets="$(grep -oE '/operator/console/assets/index-[a-zA-Z0-9_-]+[.](js|css)' <<< "$index_html" | sort -u)" || {
+ echo 'RC29_STOP=REACT_HASH_ASSETS_MISSING'; exit 3;
+}
+[[ "$assets" == *'.js'* && "$assets" == *'.css'* ]] || {
+ echo 'RC29_STOP=REACT_JS_OR_CSS_MISSING'; exit 3;
+}
+while IFS= read -r asset; do
+ [[ -n "$asset" ]] || continue
+ asset_status="$(curl --noproxy '*' -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$asset")"
+ [[ "$asset_status" == 200 ]] || {
+  echo 'RC29_STOP=REACT_ASSET_HTTP_FAILURE'; exit 3;
+ }
+done <<< "$assets"
+echo 'RC29_REACT_STATIC_ASSETS_HTTP_PASS'
 echo 'RC29_LOCAL_REACT_HTTP=200'
 echo 'RC29_ANONYMOUS_QUEUE_HTTP=401'
 echo 'RC29_MUTATING_POST_HTTP=405'
