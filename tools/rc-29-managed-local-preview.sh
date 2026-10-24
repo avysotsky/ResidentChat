@@ -32,7 +32,7 @@ pfx="$secrets/rc28-dp-certificate.pfx"
 pfxpw="$secrets/rc28-dp-password"
 sign="$secrets/rc28-operator-jwt"
 audit="$secrets/rc28-operator-audit"
-for util in docker git flock grep stat; do
+for util in docker git flock grep stat python3; do
  command -v "$util" >/dev/null || { echo 'RC29_NOT_RUN=REQUIRED_UTILITY_MISSING'; exit 2; }
 done
 exec 9<>"$lock"
@@ -136,15 +136,40 @@ if [[ "$mode" == "--token-clipboard" ]]; then
  token_dir="$(mktemp -d /dev/shm/rc29-token.XXXXXXXX)"
  trap 'rm -rf -- "$token_dir"' EXIT
  chmod 700 "$token_dir"
- docker run --rm --pull never --network none --read-only \
-  --cap-drop ALL --security-opt no-new-privileges:true \
-  --user "$(id -u):$(id -g)" --workdir /app \
-  --tmpfs /tmp:rw,nosuid,nodev,size=16m \
-  --mount "type=bind,src=$release,dst=/app,readonly" \
-  --mount "type=bind,src=$sign,dst=/run/rc29-secrets/rc28-operator-jwt,readonly" \
-  --mount "type=bind,src=$token_dir,dst=/run/rc29-token" \
-  -e DOTNET_CLI_TELEMETRY_OPTOUT=1 \
-  "$sdk" dotnet /app/ResidentChat.OperatorHost.dll --mint-local-token
+ # Owner-only standard Python library, NO network, no process CLI secrets.
+ # Token file is in /dev/shm, owner-only; never printed or persisted to disk.
+ python3 - "$sign" "$token_dir/token.jwt" <<'PY'
+import base64, hashlib, hmac, json, os, pathlib, secrets, sys, time
+try:
+    key = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+    if len(key) < 96 or len(key) > 512 or any(c not in "0123456789abcdefABCDEF" for c in key):
+        raise ValueError("invalid key")
+    def b64(x):
+        return base64.urlsafe_b64encode(x).rstrip(b"=").decode("ascii")
+    def enc(x):
+        return b64(json.dumps(x, separators=(",", ":"), ensure_ascii=True).encode("ascii"))
+    now = int(time.time())
+    header = enc({"alg": "HS256", "typ": "JWT"})
+    payload = enc({
+        "iss": "residentchat.rc29.local-operator",
+        "aud": "residentchat.rc29.owner-preview",
+        "sub": "rc29-owner-lab-operator",
+        "tenant_id": "27272727-2727-4727-8727-272727272727",
+        "role": "operator",
+        "jti": secrets.token_hex(16),
+        "iat": now, "nbf": now, "exp": now + 900
+    })
+    signed = header + "." + payload
+    signature = b64(hmac.new(key.encode("utf-8"), signed.encode("ascii"),
+                             hashlib.sha256).digest())
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(sys.argv[2], flags, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as out:
+        out.write(signed + "." + signature)
+except Exception:
+    print("RC29_TOKEN_ISSUE_FAIL_SAFE", file=sys.stderr)
+    raise SystemExit(1)
+PY
  [[ -s "$token_dir/token.jwt" &&
     "$(stat -c %a "$token_dir/token.jwt")" == 600 ]] || {
   echo 'RC29_STOP=SHORT_LIVED_JWT_FILE_INVALID'; exit 3;
