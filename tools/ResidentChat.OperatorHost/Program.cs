@@ -15,7 +15,7 @@ try
     if (args.Length != 1 || args[0] != "--serve-owner-readonly")
         throw new InvalidOperationException("RC29 mode not explicitly selected.");
 
-    static string ReadLocalSecret(string name, bool hex = true)
+    string ReadLocalSecret(string name, bool hex = true)
     {
         var file = Path.Combine(SecretDir, name);
         if (!File.Exists(file))
