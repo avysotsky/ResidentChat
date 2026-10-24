@@ -22,6 +22,8 @@
     <ProjectReference Include="../../tools/ResidentChat.PersistentDbProbe/ResidentChat.PersistentDbProbe.csproj" />
     <!-- RC-25 compile only: real permanent DB API proof needs explicit owner action. -->
     <ProjectReference Include="../../tools/ResidentChat.PersistentApiAcceptance/ResidentChat.PersistentApiAcceptance.csproj" />
+    <!-- RC-26 compile-only: permanent operator queue owner test is never run by the watcher. -->
+    <ProjectReference Include="../../tools/ResidentChat.PersistentQueueAcceptance/ResidentChat.PersistentQueueAcceptance.csproj" />
     <!-- Compile-only coverage: PostgreSQL acceptance executable is NOT run by the offline smoke gate. -->
     <ProjectReference Include="../ResidentChat.FaqPgAcceptance/ResidentChat.FaqPgAcceptance.csproj" />
   </ItemGroup>
