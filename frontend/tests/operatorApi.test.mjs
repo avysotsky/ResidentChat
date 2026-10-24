@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   useSyntheticToken, clearSyntheticToken, hasSyntheticToken,
-  getProposals, changeProposal, getTicket, getIntake, OperatorHttpError
+  getProposals, changeProposal, getTicket, getIntake,
+  getOperatorReadOnlyMode, OperatorHttpError
 } from "../src/api/operatorApi.ts";
 
 const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -89,5 +90,35 @@ test("HTTP 401/403/409 are classified without leaking response data", async () =
   } finally {
     clearSyntheticToken();
     globalThis.fetch = old;
+  }
+});
+
+test("RC-27 read-only mode is server-authenticated and rejects invalid flags", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    useSyntheticToken("signed.synthetic.jwt");
+    let mode = { readOnly: true };
+    const calls = [];
+    globalThis.fetch = async (path, options) => {
+      calls.push({ path, options });
+      return { ok: true, json: async () => mode };
+    };
+    assert.equal(await getOperatorReadOnlyMode(), true);
+    mode = { readOnly: false };
+    assert.equal(await getOperatorReadOnlyMode(), false);
+    mode = { readOnly: "false" };
+    await assert.rejects(getOperatorReadOnlyMode(), /Невідома політика/);
+    assert.equal(calls.length, 3);
+    for (const call of calls) {
+      assert.equal(call.path, "/operator/console/v1/mode");
+      assert.equal(call.options.method, "GET");
+      assert.equal(call.options.credentials, "omit");
+      assert.equal(call.options.redirect, "error");
+      assert.equal(call.options.cache, "no-store");
+      assert.equal(call.options.headers.Authorization, "Bearer signed.synthetic.jwt");
+    }
+  } finally {
+    clearSyntheticToken();
+    globalThis.fetch = originalFetch;
   }
 });
