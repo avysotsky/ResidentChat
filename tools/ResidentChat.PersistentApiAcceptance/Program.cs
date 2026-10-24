@@ -44,7 +44,6 @@ try
     };
     string connectionString = builder.ConnectionString;
     Guid alphaId = Guid.Parse(TenantAlpha);
-    Guid betaId = Guid.Parse(TenantBeta);
     string signingKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(48));
     string auditKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(48));
     string alphaJwt = Jwt(TenantAlpha, "rc25-synthetic-alpha", signingKey);
