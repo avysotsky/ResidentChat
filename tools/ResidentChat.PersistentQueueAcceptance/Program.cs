@@ -278,8 +278,8 @@ try
         Require(decisionDenied.StatusCode == HttpStatusCode.MethodNotAllowed,
             "RC27 operator proposal decision POST is not reachable");
 
-        using var webhook = new HttpRequestMessage(HttpMethod.Post, "/telegram/webhook");
-        using var webhookDenied = await reader.Client.SendAsync(webhook);
+        using var webhookPost = new HttpRequestMessage(HttpMethod.Post, "/telegram/webhook");
+        using var webhookDenied = await reader.Client.SendAsync(webhookPost);
         Require(webhookDenied.StatusCode == HttpStatusCode.MethodNotAllowed,
             "RC27 all webhook POSTs blocked even if later misconfigured");
     }
