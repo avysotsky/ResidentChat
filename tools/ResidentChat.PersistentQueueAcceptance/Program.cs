@@ -23,7 +23,8 @@ const long SyntheticChat = -1001262600000;
 const string SyntheticProposal = "26262626-2626-4626-8626-000000000026";
 try
 {
-    if (args.Length != 1 || args[0] != "--persistent-queue-once")
+    if (args.Length != 1 ||
+        args[0] is not ("--persistent-queue-once" or "--persistent-queue-readonly"))
         throw new InvalidOperationException("RC26 one-shot mode required.");
     if (!File.Exists(Secret))
         throw new InvalidOperationException("RC26 local runtime credential missing.");
@@ -152,7 +153,7 @@ try
         Console.WriteLine("RC26_EXISTING_PENDING_PROPOSAL_REUSED=YES");
     }
 
-    async Task<(WebApplication Api, HttpClient Client)> StartAsync()
+    async Task<(WebApplication Api, HttpClient Client)> StartAsync(bool readOnly = false)
     {
         // The synthetic webhook gate must be configured for the DURABLE
         // proposal dependency, but NO Telegram credential or getUpdates
@@ -167,17 +168,19 @@ try
             ["ResidentChat:Operator:AllowedTenantIds:0"] = Alpha,
             ["ResidentChat:Operator:AllowedTenantIds:1"] = Beta,
             ["ResidentChat:OperatorConsole:Enabled"] = "true",
-            ["ResidentChat:OperatorConsole:Mode"] = "synthetic-lab-only",
-            ["ResidentChat:Telegram:Enabled"] = "true",
+            ["ResidentChat:OperatorConsole:Mode"] =
+                readOnly ? "persistent-lab-readonly" : "synthetic-lab-only",
+            ["ResidentChat:PersistentReadOnly:Enabled"] = readOnly.ToString(),
+            ["ResidentChat:Telegram:Enabled"] = (!readOnly).ToString(),
             ["ResidentChat:Telegram:WebhookSecret"] = webhook,
             ["ResidentChat:Telegram:AllowedChatIds:0"] = SyntheticChat.ToString(),
             ["ResidentChat:TelegramPolling:Enabled"] = "false",
-            ["ResidentChat:DurableIntake:Enabled"] = "true",
+            ["ResidentChat:DurableIntake:Enabled"] = (!readOnly).ToString(),
             ["ResidentChat:DurableIntake:Mode"] = "metadata-only-test-groups",
             ["ResidentChat:DurableIntake:ChatHashHmacKey"] = chatHmac,
             ["ResidentChat:DurableIntake:Groups:0:ChatId"] = SyntheticChat.ToString(),
             ["ResidentChat:DurableIntake:Groups:0:TenantId"] = Alpha,
-            ["ResidentChat:DurableProposals:Enabled"] = "true",
+            ["ResidentChat:DurableProposals:Enabled"] = (!readOnly).ToString(),
             ["ResidentChat:DurableProposals:Mode"] = "synthetic-postgres-only",
             ["ResidentChat:ClassifiedTelegram:Enabled"] = "false",
             ["ResidentChat:TelegramReview:Enabled"] = "false"
@@ -238,6 +241,64 @@ try
         await second.Api.StopAsync();
         await second.Api.DisposeAsync();
     }
+    // RC-27 read-only service configuration: no Telegram mode and no
+    // ingress/durable proposal opt-in. Real GET is tenant-scoped by RLS.
+    var reader = await StartAsync(readOnly: true);
+    try
+    {
+        await VerifyQueueAsync(reader.Client);
+        using var modeReq = new HttpRequestMessage(HttpMethod.Get,
+            "/operator/console/v1/mode");
+        modeReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwtA);
+        using var mode = await reader.Client.SendAsync(modeReq);
+        Require(mode.StatusCode == HttpStatusCode.OK
+            && (await mode.Content.ReadAsStringAsync()).Contains(
+                "\"readOnly\":true", StringComparison.Ordinal),
+            "RC27 authenticated server advertises read-only mode");
+
+        using var page = await reader.Client.GetAsync("/operator/console");
+        Require(page.StatusCode == HttpStatusCode.OK,
+            "RC27 operator console can serve local React or fallback");
+        using var create = new HttpRequestMessage(HttpMethod.Post, "/operator/v1/tickets");
+        create.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwtA);
+        create.Content = new StringContent(
+            """{"category":"Water","priority":"Routine"}""",
+            Encoding.UTF8, "application/json");
+        using var createDenied = await reader.Client.SendAsync(create);
+        Require(createDenied.StatusCode == HttpStatusCode.MethodNotAllowed,
+            "RC27 direct operator ticket POST blocked at HTTP boundary");
+
+        using var decision = new HttpRequestMessage(HttpMethod.Post,
+            "/operator/console/v1/proposals/" + caseId + "/approve");
+        decision.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwtA);
+        decision.Content = new StringContent(
+            JsonSerializer.Serialize(new { confirmation = "APPROVE " + caseId }),
+            Encoding.UTF8, "application/json");
+        using var decisionDenied = await reader.Client.SendAsync(decision);
+        Require(decisionDenied.StatusCode == HttpStatusCode.MethodNotAllowed,
+            "RC27 operator proposal decision POST is not reachable");
+
+        using var webhook = new HttpRequestMessage(HttpMethod.Post, "/telegram/webhook");
+        using var webhookDenied = await reader.Client.SendAsync(webhook);
+        Require(webhookDenied.StatusCode == HttpStatusCode.MethodNotAllowed,
+            "RC27 all webhook POSTs blocked even if later misconfigured");
+    }
+    finally
+    {
+        reader.Client.Dispose();
+        await reader.Api.StopAsync();
+        await reader.Api.DisposeAsync();
+    }
+    var afterRead = await InspectAsync();
+    Require(afterRead.Intakes == 1 && afterRead.Proposals == 1
+        && afterRead.Tickets == 0 && afterRead.Decisions == 0,
+        "RC27 pure read-only HTTP does not mutate persistent tenant state");
+    Console.WriteLine("RC27_PERSISTENT_READONLY_QUEUE_PASS");
+    Console.WriteLine("RC27_MUTATING_HTTP_BLOCKED_PASS");
+    Console.WriteLine("RC27_CROSS_TENANT_JWT_RLS_PASS");
+    Console.WriteLine("RC27_POSTGRES_CONTENT_UNCHANGED=YES");
+    Console.WriteLine("RC27_TELEGRAM_ACK=NO");
+    Console.WriteLine("RC27_READONLY_OPERATOR_API_PASS");
     var after = await InspectAsync();
     Require(after.Intakes == 1 && after.Proposals == 1
         && after.Tickets == 0 && after.Decisions == 0,
