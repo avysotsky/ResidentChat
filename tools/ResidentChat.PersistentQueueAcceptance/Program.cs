@@ -86,6 +86,9 @@ try
     Require((initial.Intakes == 0 && initial.Proposals == 0)
         || (initial.Intakes == 1 && initial.Proposals == 1),
         "RC26 unexpected persistent tenant rows.");
+    if (args[0] == "--persistent-queue-readonly")
+        Require(initial.Intakes == 1 && initial.Proposals == 1,
+            "RC27 readonly requires preexisting RC26 fixture; no writes permitted.");
     if (initial.Intakes == 0)
     {
         // One atomic, fixed, metadata-only fixture in separate test tenant.
@@ -224,6 +227,8 @@ try
             "RC26 scoped permanent Pending proposal and Beta isolation");
     }
 
+    if (args[0] == "--persistent-queue-once")
+    {
     var first = await StartAsync();
     try { await VerifyQueueAsync(first.Client); }
     finally
@@ -240,6 +245,7 @@ try
         second.Client.Dispose();
         await second.Api.StopAsync();
         await second.Api.DisposeAsync();
+    }
     }
     // RC-27 read-only service configuration: no Telegram mode and no
     // ingress/durable proposal opt-in. Real GET is tenant-scoped by RLS.
@@ -303,9 +309,12 @@ try
     Require(after.Intakes == 1 && after.Proposals == 1
         && after.Tickets == 0 && after.Decisions == 0,
         "RC26 exact one metadata-only proposal and no tickets/decisions");
-    Console.WriteLine("RC26_REAL_HTTP_PENDING_QUEUE_PASS");
-    Console.WriteLine("RC26_QUEUE_API_RESTART_RETENTION_PASS");
-    Console.WriteLine("RC26_JWT_RLS_TENANT_ISOLATION_PASS");
+    if (args[0] == "--persistent-queue-once")
+    {
+        Console.WriteLine("RC26_REAL_HTTP_PENDING_QUEUE_PASS");
+        Console.WriteLine("RC26_QUEUE_API_RESTART_RETENTION_PASS");
+        Console.WriteLine("RC26_JWT_RLS_TENANT_ISOLATION_PASS");
+    }
     Console.WriteLine("RC26_PENDING_PROPOSAL_COUNT=1");
     Console.WriteLine("RC26_AUTOMATIC_TICKETS=0");
     Console.WriteLine("RC26_POSTGRES_VOLUME=UNCHANGED");
